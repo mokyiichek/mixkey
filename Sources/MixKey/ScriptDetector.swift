@@ -34,10 +34,13 @@ final class ScriptDetector {
         // 1. Text around the cursor
         if let c = client {
             let sel = c.selectedRange()
-            if sel.location != NSNotFound {
+            let total = c.length()
+            if sel.location != NSNotFound, total != NSNotFound, sel.location <= total {
                 let start = max(0, sel.location - 400)
-                let range = NSRange(location: start, length: sel.location - start + 200)
-                if let text = c.string(from: range, actualRange: nil), let s = converter.detect(text) {
+                let end = min(total, sel.location + 200)
+                var actual = NSRange(location: NSNotFound, length: 0)
+                if end > start, let text = c.string(from: NSRange(location: start, length: end - start), actualRange: &actual),
+                   let s = converter.detect(text) {
                     memory[bundleID] = s
                     return Result(script: s, reason: "text in this field")
                 }

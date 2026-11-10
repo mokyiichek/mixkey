@@ -202,7 +202,8 @@ final class MixKeyInputController: IMKInputController {
         guard sel.location != NSNotFound else { return }
         if sel.location == 0 { capitalizeFirst = true; return }
         let start = max(0, sel.location - 40)
-        let before = c.string(from: NSRange(location: start, length: sel.location - start), actualRange: nil) ?? ""
+        var actual = NSRange(location: NSNotFound, length: 0)
+        let before = c.string(from: NSRange(location: start, length: sel.location - start), actualRange: &actual) ?? ""
         let trimmed = before.trimmingCharacters(in: .whitespaces)
         if trimmed.isEmpty {
             capitalizeFirst = before.isEmpty ? sel.location == 0 : start == 0
