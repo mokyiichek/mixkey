@@ -132,7 +132,8 @@ public final class MixEngine {
             if syllables == 1 {
                 cScore[i] = 0.8
             } else if let first = r.words.first, first.rawLength >= t.text.count, first.reading == r.reading {
-                cScore[i] = 3 // the whole token is one real Chinese word, e.g. "nihao"
+                // the whole token is one Chinese word ("nihao" 你好); trust it by how common that word is
+                cScore[i] = min(3, max(0.5, log10(Double(first.weight) + 1) - 2))
             } else {
                 cScore[i] = 0.3
             }

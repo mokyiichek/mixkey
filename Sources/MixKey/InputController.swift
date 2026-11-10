@@ -19,8 +19,19 @@ final class MixKeyInputController: IMKInputController {
     private var aiWork: DispatchWorkItem?
     private var aiPendingFor: String?
 
+    private var lastDetect = Date.distantPast
     private var shiftAlone = false
     private var shiftDownAt = Date.distantPast
+
+    /// The text field we're typing into. IMK passes it with every call; `client()` can be nil in
+    /// Chrome / Electron apps, so remember the one we were given.
+    private weak var activeClient: (IMKTextInput & NSObjectProtocol)?
+    private func cl() -> (IMKTextInput & NSObjectProtocol)? {
+        activeClient ?? (super.client() as (IMKTextInput & NSObjectProtocol)?)
+    }
+    private func adopt(_ sender: Any?) {
+        if let c = sender as? (IMKTextInput & NSObjectProtocol) { activeClient = c }
+    }
 
     private var shared: Shared { .shared }
     private var engine: MixEngine? { shared.engine }
@@ -45,6 +56,8 @@ final class MixKeyInputController: IMKInputController {
 
     override func activateServer(_ sender: Any!) {
         super.activateServer(sender)
+        adopt(sender)
+        dlog("activate client=\(cl()?.bundleIdentifier() ?? "nil")")
         detectScript()
         AIAssist.shared.warmUp()
         shared.panel.onSelect = { [weak self] i in
@@ -54,6 +67,7 @@ final class MixKeyInputController: IMKInputController {
     }
 
     override func deactivateServer(_ sender: Any!) {
+        adopt(sender)
         if isComposing { commitTop() }
         shared.panel.hide()
         lastCommitEndedChinese = false
@@ -61,13 +75,16 @@ final class MixKeyInputController: IMKInputController {
     }
 
     override func commitComposition(_ sender: Any!) {
+        adopt(sender)
         if isComposing { commitTop() }
     }
 
     // MARK: - Keys
 
     override func handle(_ event: NSEvent!, client sender: Any!) -> Bool {
+        adopt(sender)
         guard let event = event else { return false }
+        if event.type == .keyDown { dlog("key \(event.keyCode) '\(event.characters ?? "")' app=\(cl()?.bundleIdentifier() ?? "nil") client=\(cl() == nil ? "nil" : "ok") raw='\(raw)'") }
 
         if event.type == .flagsChanged {
             handleShift(event)
@@ -81,7 +98,7 @@ final class MixKeyInputController: IMKInputController {
             if isComposing { commitTop() }
             return false
         }
-        guard engine != nil else { return false }
+        guard engine != nil, cl() != nil else { return false }
 
         if shared.englishMode {
             lastCommitEndedChinese = false
@@ -163,7 +180,7 @@ final class MixKeyInputController: IMKInputController {
                 return true
             }
             if lastCommitEndedChinese && ",.?!;:\\".contains(c) {
-                client()?.insertText(full, replacementRange: MixKeyInputController.notFound)
+                cl()?.insertText(full, replacementRange: MixKeyInputController.notFound)
                 return true
             }
             return false
@@ -195,8 +212,8 @@ final class MixKeyInputController: IMKInputController {
 
     private func startComposition() {
         capitalizeFirst = false
-        if Settings.shared.scriptMode == .auto { detectScript() }
-        guard Settings.shared.capitalizeSentences, let c = client() else { return }
+        if Settings.shared.scriptMode == .auto, Date().timeIntervalSince(lastDetect) > 4 { detectScript() }
+        guard Settings.shared.capitalizeSentences, let c = cl() else { return }
         if MixKeyInputController.codeApps.contains(c.bundleIdentifier() ?? "") { return }
         let sel = c.selectedRange()
         guard sel.location != NSNotFound else { return }
@@ -315,7 +332,7 @@ final class MixKeyInputController: IMKInputController {
 
     private func commit(_ text: String) {
         if !text.isEmpty {
-            client()?.insertText(text, replacementRange: MixKeyInputController.notFound)
+            cl()?.insertText(text, replacementRange: MixKeyInputController.notFound)
             lastCommitEndedChinese = text.last.map { ScriptConverter.isCJK($0) } ?? false
         }
         reset(clearMarked: text.isEmpty)
@@ -329,7 +346,7 @@ final class MixKeyInputController: IMKInputController {
         aiWork?.cancel()
         aiPendingFor = nil
         if clearMarked {
-            client()?.setMarkedText("", selectionRange: NSRange(location: 0, length: 0),
+            cl()?.setMarkedText("", selectionRange: NSRange(location: 0, length: 0),
                                     replacementRange: MixKeyInputController.notFound)
         }
         shared.panel.hide()
@@ -343,8 +360,9 @@ final class MixKeyInputController: IMKInputController {
     // MARK: - Drawing
 
     private func render() {
-        guard let client = client() else { return }
+        guard let client = cl() else { dlog("render: no client"); return }
         let composed = currentOutput()
+        dlog("render '\(composed)'")
         let attrs: [NSAttributedString.Key: Any] = [.underlineStyle: NSUnderlineStyle.single.rawValue]
         client.setMarkedText(NSAttributedString(string: composed, attributes: attrs),
                              selectionRange: NSRange(location: (composed as NSString).length, length: 0),
@@ -383,7 +401,7 @@ final class MixKeyInputController: IMKInputController {
     }
 
     private func flashStatus(_ text: String) {
-        guard let client = client() else { return }
+        guard let client = cl() else { return }
         let model = CandidatePanel.Model(preview: text, items: [], highlighted: 0, status: "")
         shared.panel.show(model, cursorRect: cursorRect(client))
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
@@ -394,11 +412,12 @@ final class MixKeyInputController: IMKInputController {
     // MARK: - Script
 
     private func detectScript() {
+        lastDetect = Date()
         switch Settings.shared.scriptMode {
         case .simplified: script = .simplified; scriptReason = "fixed"
         case .traditional: script = .traditional; scriptReason = "fixed"
         case .auto:
-            let r = shared.detector?.detect(client: client(), fallback: Settings.shared.defaultScript)
+            let r = shared.detector?.detect(client: cl(), fallback: Settings.shared.defaultScript)
             script = r?.script ?? Settings.shared.defaultScript
             scriptReason = r?.reason ?? "default"
         }
@@ -510,5 +529,17 @@ final class MixKeyInputController: IMKInputController {
         • , . ? ! after Chinese become ，。？！
         """
         alert.runModal()
+    }
+}
+
+/// Debug logging to ~/Library/Logs/MixKey.log: `defaults write com.mixkey.inputmethod.MixKey debug -bool YES`.
+func dlog(_ msg: @autoclosure () -> String) {
+    guard UserDefaults.standard.bool(forKey: "debug") else { return }
+    let line = "\(ISO8601DateFormatter.string(from: Date(), timeZone: .current, formatOptions: [.withTime, .withFractionalSeconds])) \(msg())\n"
+    let url = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0].appendingPathComponent("Logs/MixKey.log")
+    if let h = try? FileHandle(forWritingTo: url) {
+        h.seekToEndOfFile(); h.write(Data(line.utf8)); try? h.close()
+    } else {
+        try? Data(line.utf8).write(to: url)
     }
 }
