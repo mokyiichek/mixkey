@@ -27,6 +27,9 @@ public final class Lexicon {
     public let maxProperWords: Int
 
     private var lookupCache: [String: [Entry]] = [:]
+    /// What the user taught MixKey; merged into every lookup.
+    public var user: UserDictionary? { didSet { lookupCache.removeAll(); prefixCache.removeAll() } }
+    public func userChanged() { lookupCache.removeAll(); prefixCache.removeAll() }
     private var prefixCache: [String: Bool] = [:]
 
     public init(path: String) throws {
@@ -82,6 +85,19 @@ public final class Lexicon {
         while sqlite3_step(st) == SQLITE_ROW {
             out.append(Entry(word: String(cString: sqlite3_column_text(st, 0)), weight: Int(sqlite3_column_int64(st, 1))))
         }
+        if let learned = user?.stats(for: key) {
+            // Picked words go above the current best; often-used phrases get a gentle lift.
+            let top = out.first?.weight ?? 1000
+            var merged: [String: Int] = [:]
+            for e in out { merged[e.word] = e.weight }
+            for (word, st) in learned {
+                var w = merged[word] ?? 0
+                if st.picks > 0 { w = max(w, top + 1) + st.picks * 1000 + st.uses * 100 }
+                else if st.uses > 0 { w += Int(Double(max(top, w)) * min(0.6, 0.15 * Double(st.uses))) }
+                merged[word] = w
+            }
+            out = merged.map { Entry(word: $0.key, weight: $0.value) }.sorted { $0.weight > $1.weight }
+        }
         if lookupCache.count > 20000 { lookupCache.removeAll(keepingCapacity: true) }
         lookupCache[key] = out
         return out
@@ -90,6 +106,7 @@ public final class Lexicon {
     /// True if some dictionary key is longer than and starts with `key + " "`.
     public func hasLongerKey(_ key: String) -> Bool {
         if let hit = prefixCache[key] { return hit }
+        if user?.hasLongerKey(key) == true { return true }
         guard let st = stmtKeyPrefix else { return false }
         sqlite3_reset(st)
         bind(st, 1, key + " ")
@@ -129,6 +146,16 @@ public final class Lexicon {
         sqlite3_reset(st)
         bind(st, 1, lower)
         return sqlite3_step(st) == SQLITE_ROW ? String(cString: sqlite3_column_text(st, 0)) : nil
+    }
+
+    /// True if some multi-word proper noun starts with these words ("port" -> Port Dickson / Port Klang).
+    public func startsProperNoun(_ lower: String) -> Bool {
+        var st: OpaquePointer?
+        defer { sqlite3_finalize(st) }
+        guard sqlite3_prepare_v2(db, "SELECT 1 FROM proper WHERE lower >= ?1 AND lower < ?2 LIMIT 1", -1, &st, nil) == SQLITE_OK else { return false }
+        bind(st!, 1, lower + " ")
+        bind(st!, 2, lower + "!")
+        return sqlite3_step(st) == SQLITE_ROW
     }
 
     public func stPhrase(_ s: String) -> String? {

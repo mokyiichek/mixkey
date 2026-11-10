@@ -92,6 +92,12 @@ final class MixKeyInputController: IMKInputController {
     // MARK: - Keys
 
     override func handle(_ event: NSEvent!, client sender: Any!) -> Bool {
+        let t0 = Date()
+        defer {
+            let ms = Date().timeIntervalSince(t0) * 1000
+            if ms > 60 { dlog(String(format: "SLOW key %.0f ms (analyze %.0f, render %.0f, start %.0f)", ms, tAnalyze, tRender, tStart)) }
+            tAnalyze = 0; tRender = 0; tStart = 0
+        }
         adopt(sender)
         guard let event = event else { return false }
         if event.type == .flagsChanged {
@@ -211,6 +217,8 @@ final class MixKeyInputController: IMKInputController {
     // MARK: - Composition
 
     private func startComposition() {
+        let ts = Date()
+        defer { tStart += Date().timeIntervalSince(ts) * 1000 }
         if Settings.shared.scriptMode == .auto, Date().timeIntervalSince(lastDetect) > 4 { detectScript() }
         capitalizeFirst = false
         guard lead.isEmpty || lead == " ", Settings.shared.capitalizeSentences, let c = cl() else { return }
@@ -250,15 +258,32 @@ final class MixKeyInputController: IMKInputController {
         guard let engine = engine else { return }
         engine.fixSpelling = Settings.shared.autoFixSpelling
         if raw.trimmingCharacters(in: .whitespaces).isEmpty { reset(); return }
+        let ta = Date()
         var a = engine.analyze(raw, options: options)
+        tAnalyze += Date().timeIntervalSince(ta) * 1000
 
-        // Send settled words: everything except the last two pieces, once they're complete.
-        if autoSend, a.segments.count > 2 {
-            let keep = 2
-            let done = a.segments.prefix(a.segments.count - keep)
+        // Send settled words. Keep open: the word being typed, plus the word before it when it can
+        // still change (Chinese, or the start of a name like "port" -> Port Dickson).
+        // English words go out the moment you press space.
+        if autoSend, a.segments.count >= 2 || (a.segments.count == 1 && raw.hasSuffix(" ")) {
+            let segs = a.segments
+            let typing = raw.hasSuffix(" ") ? nil : segs.last
+            var openFrom = typing == nil ? segs.count : segs.count - 1
+            if openFrom > 0 {
+                let prev = segs[openFrom - 1]
+                let prevText = String(Array(raw)[prev.start..<prev.end]).lowercased()
+                let mayChange = prev.kind == .chinese || typing?.kind == .chinese
+                    || engine.lexicon.startsProperNoun(prevText)
+                    || a.tokens.contains { $0.ambiguous && $0.start >= prev.start }
+                if mayChange { openFrom -= 1 }
+            }
+            // Chinese: keep at most two pieces open so homophones can still be fixed by context
+            if let t = typing, t.kind == .chinese { openFrom = max(openFrom, segs.count - 2) }
+            let done = segs.prefix(max(0, openFrom))
             if let last = done.last, last.end < raw.count {
                 var text = ""
                 for seg in done { text = engine.join(text, seg.output, options: options) }
+                learnSent(Array(done))
                 if capitalizeFirst, let f = text.first, f.isLowercase, f.isASCII { text = f.uppercased() + text.dropFirst() }
                 send(s(text))
                 raw = String(raw.dropFirst(last.end)).trimmingCharacters(in: CharacterSet(charactersIn: " "))
@@ -274,8 +299,17 @@ final class MixKeyInputController: IMKInputController {
         if let ai = AIAssist.shared.cached(key), AIAssist.shared.isAvailable, ai != a.preview {
             list.append(Candidate(display: ai, output: ai, consumes: raw.count, kind: .ai))
         }
-        if a.hasChinese {
-            list.append(contentsOf: a.candidates.filter { $0.kind == .word || $0.kind == .alternative })
+        if a.hasChinese, let fi = a.segments.firstIndex(where: { $0.kind == .chinese }) {
+            // Choice 1 is always what you see inline for the first Chinese part.
+            let seg = a.segments[fi]
+            var before = ""
+            for x in a.segments[..<fi] { before = engine.join(before, x.output, options: options) }
+            let out = before.isEmpty ? seg.output : engine.join(before, seg.output, options: options)
+            list.append(Candidate(display: seg.output, output: out, consumes: seg.end, kind: .word, reading: seg.reading))
+            for c in a.candidates where (c.kind == .word || c.kind == .alternative)
+                && !(c.display == seg.output && c.consumes == seg.end) {
+                list.append(c)
+            }
             if let eng = a.candidates.first(where: { $0.kind == .english }) { list.append(eng) }
         } else if let eng = a.candidates.first(where: { $0.kind == .english }), eng.output != a.preview {
             list.append(Candidate(display: eng.display, output: eng.output, consumes: raw.count, kind: .english))
@@ -294,6 +328,7 @@ final class MixKeyInputController: IMKInputController {
     }
 
     private var current: Analysis?
+    private var tAnalyze = 0.0, tRender = 0.0, tStart = 0.0
 
     private var preview: String {
         if userMovedHighlight, candidates.indices.contains(highlighted), candidates[highlighted].consumes >= raw.count {
@@ -331,6 +366,9 @@ final class MixKeyInputController: IMKInputController {
     private func select(_ index: Int) {
         guard candidates.indices.contains(index) else { return }
         let c = candidates[index]
+        if c.kind == .word, let reading = c.reading {
+            engine?.learn(reading: reading, word: c.display, picked: true)
+        }
         if c.consumes >= raw.count {
             send(s(c.output))
             reset(clearMarked: false)
@@ -355,12 +393,22 @@ final class MixKeyInputController: IMKInputController {
             let done = engine.analyze(raw + " ", options: options)
             if done.tokens.map(\.kind) == shown.tokens.map(\.kind), AIAssist.shared.cached(raw.trimmingCharacters(in: .whitespaces)) == nil {
                 out = s(done.preview)
+                learnSent(done.segments)
             }
         }
         if trailingSpace, let l = out.last, l.isASCII, l.isLetter || l.isNumber { out += " " }
         send(out)
         reset(clearMarked: false)
         return out
+    }
+
+    /// Chinese phrases sent without changes are probably right: give them a gentle boost.
+    private func learnSent(_ segs: [Segment]) {
+        guard let engine = engine else { return }
+        for seg in segs where seg.kind == .chinese {
+            guard let r = seg.reading, (2...6).contains(r.split(separator: " ").count) else { continue }
+            engine.learn(reading: r, word: seg.output, picked: false)
+        }
     }
 
     /// Shift+Enter: send exactly what was typed.
@@ -378,10 +426,12 @@ final class MixKeyInputController: IMKInputController {
     }
 
     private func insert(_ text: String) {
+        cachedRect = nil
         cl()?.insertText(text, replacementRange: MixKeyInputController.notFound)
     }
 
     private func reset(clearMarked: Bool = true) {
+        cachedRect = nil
         raw = ""
         candidates = []
         current = nil
@@ -399,6 +449,8 @@ final class MixKeyInputController: IMKInputController {
     // MARK: - Drawing
 
     private func render() {
+        let tr = Date()
+        defer { tRender += Date().timeIntervalSince(tr) * 1000 }
         guard let client = cl() else { return }
         let composed = withLead(preview)
         client.setMarkedText(NSAttributedString(string: composed, attributes: [
@@ -425,13 +477,18 @@ final class MixKeyInputController: IMKInputController {
         shared.panel.show(model, cursorRect: cursorRect(client))
     }
 
+    /// Where the open text starts on screen. It doesn't move while you type a word, so ask the app once.
+    private var cachedRect: NSRect?
+
     private func cursorRect(_ client: IMKTextInput & NSObjectProtocol) -> NSRect {
+        if let r = cachedRect { return r }
         var rect = NSRect.zero
         client.attributes(forCharacterIndex: 0, lineHeightRectangle: &rect)
         if rect == .zero || (rect.origin.x == 0 && rect.origin.y == 0) {
             let m = NSEvent.mouseLocation
             rect = NSRect(x: m.x, y: m.y - 20, width: 1, height: 20)
         }
+        cachedRect = rect
         return rect
     }
 

@@ -46,6 +46,8 @@ public struct Segment: Equatable {
     public let start: Int
     public let end: Int
     public let output: String
+    /// Pinyin key for Chinese segments ("ming tian").
+    public var reading: String? = nil
 }
 
 public struct Analysis {
@@ -74,6 +76,15 @@ public final class MixEngine {
     public var fixSpelling = true
     public let speller: SpellFixer
 
+    /// Remembers a choice. `picked` = chosen from the list; otherwise sent as typed.
+    public func learn(reading: String, word: String, picked: Bool) {
+        guard let user = lexicon.user, word.allSatisfy({ ScriptConverter.isCJK($0) }) else { return }
+        // Whole phrase for the reading, e.g. "ming tian" -> 明天
+        guard reading.split(separator: " ").count == word.count else { return }
+        user.learn(key: reading, word: word, picked: picked)
+        lexicon.userChanged()
+    }
+
     public init(lexiconPath: String) throws {
         lexicon = try Lexicon(path: lexiconPath)
         pinyin = PinyinConverter(lexicon: lexicon)
@@ -81,8 +92,19 @@ public final class MixEngine {
         speller = SpellFixer(lexicon: lexicon)
     }
 
-    /// Spelling fix for one complete lowercase English word, or nil to keep it.
+    private var fixCache: [String: String?] = [:]
+
+    /// Spelling fix for one complete lowercase English word, or nil to keep it (cached).
     public func fixWord(_ w: String) -> String? {
+        let key = "\(fixSpelling ? 1 : 0)|\(w)"
+        if let hit = fixCache[key] { return hit }
+        let r = computeFix(w)
+        if fixCache.count > 5000 { fixCache.removeAll() }
+        fixCache[key] = r
+        return r
+    }
+
+    private func computeFix(_ w: String) -> String? {
         guard w == w.lowercased(), w.count >= 2, !SpellFixer.protected.contains(w) else { return nil }
         let rank = lexicon.englishRank(w)
         if rank == nil, let cap = englishCapitalizer?(w) { return cap }
@@ -348,7 +370,8 @@ public final class MixEngine {
         var segments: [Segment] = []
         for (idx, run) in rs.enumerated() {
             if run.kind == .chinese, results[idx] != nil {
-                segments.append(Segment(kind: .chinese, start: run.start, end: run.end, output: converted[idx]))
+                segments.append(Segment(kind: .chinese, start: run.start, end: run.end, output: converted[idx],
+                                        reading: results[idx]?.reading))
             } else {
                 var t = 0
                 for g in caseEnglishGroups(run.tokens.map(\.text), lastComplete: endsWithSpace || idx < rs.count - 1) {

@@ -20,6 +20,9 @@ final class Shared {
             engine = nil
         }
         detector = engine.map { ScriptDetector(converter: $0.script) }
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("MixKey", isDirectory: true)
+        engine?.lexicon.user = UserDictionary(url: support.appendingPathComponent("learned.json"))
         engine?.englishCapitalizer = Shared.capitalize
         engine?.englishGuesses = Shared.guesses
     }

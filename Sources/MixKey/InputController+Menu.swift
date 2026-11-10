@@ -1,5 +1,6 @@
 import AppKit
 import InputMethodKit
+import MixKeyCore
 
 /// The MixKey menu under the input menu in the menu bar.
 extension MixKeyInputController {
@@ -33,6 +34,7 @@ extension MixKeyInputController {
         m.addItem(.separator())
         m.addItem(item(ScriptDetector.hasAccessibility ? "Website detection: allowed ✓" : "Allow website detection (Accessibility)…",
                        #selector(menuAccessibility(_:))))
+        m.addItem(item("Forget words MixKey learned", #selector(menuForget(_:))))
         m.addItem(item("About MixKey…", #selector(menuAbout(_:))))
         return m
     }
@@ -58,6 +60,10 @@ extension MixKeyInputController {
     @objc func menuToggleAI(_ sender: Any?) {
         if Settings.shared.apiKey == nil { menuAPIKey(sender); return }
         Settings.shared.aiEnabled.toggle()
+    }
+    @objc func menuForget(_ sender: Any?) {
+        Shared.shared.engine?.lexicon.user?.clear()
+        Shared.shared.engine?.lexicon.userChanged()
     }
     @objc func menuAccessibility(_ sender: Any?) { ScriptDetector.requestAccessibility() }
 
