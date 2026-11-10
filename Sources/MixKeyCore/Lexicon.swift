@@ -110,6 +110,19 @@ public final class Lexicon {
         return sqlite3_step(st) == SQLITE_ROW ? Int(sqlite3_column_int64(st, 0)) : nil
     }
 
+    /// All English words up to a frequency rank (for the spelling fixer).
+    public func allEnglish(maxRank: Int) -> [(String, Int)] {
+        var st: OpaquePointer?
+        var out: [(String, Int)] = []
+        if sqlite3_prepare_v2(db, "SELECT word, rank FROM english WHERE rank <= \(maxRank)", -1, &st, nil) == SQLITE_OK {
+            while sqlite3_step(st) == SQLITE_ROW {
+                out.append((String(cString: sqlite3_column_text(st, 0)), Int(sqlite3_column_int64(st, 1))))
+            }
+        }
+        sqlite3_finalize(st)
+        return out
+    }
+
     /// Correctly capitalised form of a (possibly multi-word) proper noun, given lowercase text.
     public func properNoun(_ lower: String) -> String? {
         guard let st = stmtProper else { return nil }

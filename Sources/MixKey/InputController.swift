@@ -2,31 +2,39 @@ import AppKit
 import InputMethodKit
 import MixKeyCore
 
-/// One controller per text-input client. Handles keys, composition and the candidate window.
+/// One controller per text-input client.
+///
+/// Typing model ("feels like normal typing"):
+///  - What you type is shown converted, inline (你好, Port Dickson, fixed spelling).
+///  - Words are sent to the app automatically as you keep typing; only the last couple of words stay
+///    open so the next word can still fix them (ming → 明 becomes 明天 when you type tian).
+///  - Enter sends everything AND does what Enter normally does (new line / send message).
+///  - A small one-line bar of choices appears only when there's something to choose (Chinese words,
+///    or the original spelling of a word that was corrected).
 @objc(MixKeyInputController)
 final class MixKeyInputController: IMKInputController {
-    // Composition state
-    private var raw = ""          // letters + spaces being typed
-    private var fixed = ""        // words already chosen but not yet sent to the app
+    private var raw = ""                 // what's still open (letters + spaces)
+    private var lead = ""                // last bit of text already sent in this run (for spacing)
     private var candidates: [Candidate] = []
     private var highlighted = 0
+    private var userMovedHighlight = false
+    private var barVisible = false
     private let pageSize = 9
 
-    private var script: ChineseScript = .simplified
+    private(set) var script: ChineseScript = .simplified
     private var scriptReason = ""
     private var capitalizeFirst = false
-    private var lastCommitEndedChinese = false
-    private var aiWork: DispatchWorkItem?
-    private var aiPendingFor: String?
-
+    private var lastSentChinese = false
     private var lastDetect = Date.distantPast
+    private var aiWork: DispatchWorkItem?
+
     private var shiftAlone = false
     private var shiftDownAt = Date.distantPast
 
     /// The text field we're typing into. IMK passes it with every call; `client()` can be nil in
     /// Chrome / Electron apps, so remember the one we were given.
     private weak var activeClient: (IMKTextInput & NSObjectProtocol)?
-    private func cl() -> (IMKTextInput & NSObjectProtocol)? {
+    func cl() -> (IMKTextInput & NSObjectProtocol)? {
         activeClient ?? (super.client() as (IMKTextInput & NSObjectProtocol)?)
     }
     private func adopt(_ sender: Any?) {
@@ -35,7 +43,7 @@ final class MixKeyInputController: IMKInputController {
 
     private var shared: Shared { .shared }
     private var engine: MixEngine? { shared.engine }
-    private var isComposing: Bool { !raw.isEmpty || !fixed.isEmpty }
+    private var isComposing: Bool { !raw.isEmpty }
 
     private static let notFound = NSRange(location: NSNotFound, length: NSNotFound)
     private static let fullWidth: [Character: String] = [
@@ -57,7 +65,8 @@ final class MixKeyInputController: IMKInputController {
     override func activateServer(_ sender: Any!) {
         super.activateServer(sender)
         adopt(sender)
-        dlog("activate client=\(cl()?.bundleIdentifier() ?? "nil")")
+        dlog("activate \(cl()?.bundleIdentifier() ?? "nil")")
+        lead = ""
         detectScript()
         AIAssist.shared.warmUp()
         shared.panel.onSelect = { [weak self] i in
@@ -68,15 +77,16 @@ final class MixKeyInputController: IMKInputController {
 
     override func deactivateServer(_ sender: Any!) {
         adopt(sender)
-        if isComposing { commitTop() }
+        if isComposing { sendAll() }
         shared.panel.hide()
-        lastCommitEndedChinese = false
+        lead = ""
         super.deactivateServer(sender)
     }
 
     override func commitComposition(_ sender: Any!) {
         adopt(sender)
-        if isComposing { commitTop() }
+        if isComposing { sendAll() }
+        lead = ""
     }
 
     // MARK: - Keys
@@ -84,76 +94,68 @@ final class MixKeyInputController: IMKInputController {
     override func handle(_ event: NSEvent!, client sender: Any!) -> Bool {
         adopt(sender)
         guard let event = event else { return false }
-        if event.type == .keyDown { dlog("key \(event.keyCode) '\(event.characters ?? "")' app=\(cl()?.bundleIdentifier() ?? "nil") client=\(cl() == nil ? "nil" : "ok") raw='\(raw)'") }
-
         if event.type == .flagsChanged {
             handleShift(event)
             return false
         }
         guard event.type == .keyDown else { return false }
         shiftAlone = false
+        dlog("key \(event.keyCode) '\(event.characters ?? "")' raw='\(raw)' client=\(cl() == nil ? "nil" : "ok")")
 
-        let mods = event.modifierFlags.intersection([.command, .control, .option])
-        if !mods.isEmpty {
-            if isComposing { commitTop() }
-            return false
-        }
         guard engine != nil, cl() != nil else { return false }
-
-        if shared.englishMode {
-            lastCommitEndedChinese = false
+        let mods = event.modifierFlags.intersection([.command, .control, .option])
+        if !mods.isEmpty || shared.englishMode {
+            if isComposing { sendAll() }
+            lead = ""
             return false
         }
 
         let chars = event.characters ?? ""
         switch event.keyCode {
         case 36, 76: // Return / Enter
-            guard isComposing else { lastCommitEndedChinese = false; return false }
-            if event.modifierFlags.contains(.shift) { commitLiteral() } else { select(highlighted) }
-            return true
-        case 53: // Esc
+            guard isComposing else { lead = ""; return false }
+            if event.modifierFlags.contains(.shift) { sendLiteral(); return true }
+            if userMovedHighlight && barVisible { select(highlighted); return true }
+            sendAll()
+            lead = ""
+            return false // let the app do its Enter (new line / send)
+        case 53: // Esc: throw away what's still open
             guard isComposing else { return false }
             reset()
             return true
         case 51: // Delete
-            guard isComposing else { return false }
-            if !raw.isEmpty { raw.removeLast() } else if !fixed.isEmpty { fixed.removeLast() }
-            if !isComposing { reset() } else { refresh() }
+            guard isComposing else { lead = ""; return false }
+            raw.removeLast()
+            if raw.isEmpty { reset() } else { refresh(autoSend: false) }
             return true
         case 49: // Space
-            guard isComposing else { lastCommitEndedChinese = false; return false }
-            if raw.isEmpty || raw.hasSuffix(" ") {
-                // double space = send what's shown
-                raw = raw.trimmingCharacters(in: .whitespaces)
-                let out = currentOutput()
-                commit(out + (endsLatin(out) ? " " : ""))
+            guard isComposing else { lead = " "; return false }
+            if raw.hasSuffix(" ") {
+                sendAll(trailingSpace: true) // double space: send + a real space
             } else {
                 raw += " "
                 refresh()
             }
             return true
-        case 125, 48: // Down, Tab
-            guard isComposing else { return false }
+        case 48: // Tab / Shift+Tab: move through choices
+            guard isComposing, barVisible else { if isComposing { sendAll() }; return false }
             moveHighlight(event.modifierFlags.contains(.shift) ? -1 : 1)
             return true
-        case 126: // Up
-            guard isComposing else { return false }
-            moveHighlight(-1)
+        case 125, 126: // Down / Up
+            guard isComposing, barVisible else { if isComposing { sendAll() }; lead = ""; return false }
+            moveHighlight(event.keyCode == 125 ? 1 : -1)
             return true
-        case 121, 124: // Page Down, Right
-            guard isComposing else { return false }
-            moveHighlight(pageSize - highlighted % pageSize)
-            return true
-        case 116, 123: // Page Up, Left
-            guard isComposing else { return false }
-            moveHighlight(-(highlighted % pageSize) - (highlighted >= pageSize ? pageSize : 0))
-            return true
+        case 123, 124, 115, 119, 116, 121: // arrows, Home/End, Page keys: send and move
+            if isComposing { sendAll() }
+            lead = ""
+            return false
         default:
             break
         }
 
         guard chars.count == 1, let c = chars.first else {
-            if isComposing { commitTop() }
+            if isComposing { sendAll() }
+            lead = ""
             return false
         }
 
@@ -163,31 +165,33 @@ final class MixKeyInputController: IMKInputController {
             refresh()
             return true
         }
-        if c == "'" && !raw.isEmpty && !raw.hasSuffix(" ") {
+        if c == "'" && isComposing && !raw.hasSuffix(" ") {
             raw.append(c)
             refresh()
             return true
         }
-        if let d = c.wholeNumberValue, c.isASCII, isComposing {
+        if let d = c.wholeNumberValue, c.isASCII, isComposing, barVisible {
             if d >= 1 { select(pageStart + d - 1) }
             return true
         }
         if let full = MixKeyInputController.fullWidth[c] {
             if isComposing {
-                let out = currentOutput()
+                let out = sendAll()
                 let chinese = out.last.map { ScriptConverter.isCJK($0) } ?? false
-                commit(out + (chinese ? full : String(c)))
+                insert(chinese ? full : String(c))
+                lead = ""
                 return true
             }
-            if lastCommitEndedChinese && ",.?!;:\\".contains(c) {
-                cl()?.insertText(full, replacementRange: MixKeyInputController.notFound)
+            if lastSentChinese && ",.?!;:\\".contains(c) {
+                insert(full)
                 return true
             }
             return false
         }
-        // Any other key: send what we have, then let the app handle the key.
-        if isComposing { commitTop() }
-        lastCommitEndedChinese = false
+        // Any other key (digits, symbols): send what we have, then let the app handle the key.
+        if isComposing { sendAll(trailingSpace: raw.hasSuffix(" ")) }
+        lead = ""
+        lastSentChinese = false
         return false
     }
 
@@ -196,43 +200,39 @@ final class MixKeyInputController: IMKInputController {
         if event.modifierFlags.contains(.shift) {
             shiftAlone = true
             shiftDownAt = Date()
-        } else if shiftAlone, Date().timeIntervalSince(shiftDownAt) < 0.5 {
+        } else if shiftAlone, Date().timeIntervalSince(shiftDownAt) < 0.4 {
             shiftAlone = false
-            toggleEnglishMode()
+            if isComposing { sendLiteral() }
+            shared.englishMode.toggle()
+            flash(shared.englishMode ? "ABC" : "混")
         }
-    }
-
-    private func toggleEnglishMode() {
-        if isComposing { commitLiteral() }
-        shared.englishMode.toggle()
-        flashStatus(shared.englishMode ? "ABC  English only  (tap Shift to go back)" : "混  Pinyin + English")
     }
 
     // MARK: - Composition
 
     private func startComposition() {
-        capitalizeFirst = false
         if Settings.shared.scriptMode == .auto, Date().timeIntervalSince(lastDetect) > 4 { detectScript() }
-        guard Settings.shared.capitalizeSentences, let c = cl() else { return }
+        capitalizeFirst = false
+        guard lead.isEmpty || lead == " ", Settings.shared.capitalizeSentences, let c = cl() else { return }
         if MixKeyInputController.codeApps.contains(c.bundleIdentifier() ?? "") { return }
         let sel = c.selectedRange()
         guard sel.location != NSNotFound else { return }
         if sel.location == 0 { capitalizeFirst = true; return }
-        let start = max(0, sel.location - 40)
+        let start = max(0, sel.location - 20)
         var actual = NSRange(location: NSNotFound, length: 0)
         let before = c.string(from: NSRange(location: start, length: sel.location - start), actualRange: &actual) ?? ""
         let trimmed = before.trimmingCharacters(in: .whitespaces)
-        if trimmed.isEmpty {
-            capitalizeFirst = before.isEmpty ? sel.location == 0 : start == 0
-        } else if let last = trimmed.last {
+        if let last = trimmed.last {
             capitalizeFirst = ".!?。！？\n".contains(last)
+        } else {
+            capitalizeFirst = start == 0 && !before.isEmpty
         }
     }
 
     private var options: EngineOptions {
         var o = EngineOptions()
         o.spaceBetweenScripts = Settings.shared.spaceBetweenScripts
-        o.capitalizeFirst = capitalizeFirst && fixed.isEmpty
+        o.capitalizeFirst = capitalizeFirst
         return o
     }
 
@@ -240,61 +240,83 @@ final class MixKeyInputController: IMKInputController {
         script == .traditional ? (engine?.script.toTraditional(text) ?? text) : text
     }
 
-    private func join(_ a: String, _ b: String) -> String {
-        engine?.join(a, b, options: options) ?? a + b
+    /// `text` with the right spacing after what was already sent in this run.
+    private func withLead(_ text: String) -> String {
+        guard let engine = engine, !lead.isEmpty, !text.isEmpty else { return text }
+        return String(engine.join(lead, text, options: options).dropFirst(lead.count))
     }
 
-    private func refresh() {
+    private func refresh(autoSend: Bool = true) {
         guard let engine = engine else { return }
-        if raw.trimmingCharacters(in: .whitespaces).isEmpty {
-            if fixed.isEmpty { reset() } else { candidates = []; render() }
-            return
+        engine.fixSpelling = Settings.shared.autoFixSpelling
+        if raw.trimmingCharacters(in: .whitespaces).isEmpty { reset(); return }
+        var a = engine.analyze(raw, options: options)
+
+        // Send settled words: everything except the last two pieces, once they're complete.
+        if autoSend, a.segments.count > 2 {
+            let keep = 2
+            let done = a.segments.prefix(a.segments.count - keep)
+            if let last = done.last, last.end < raw.count {
+                var text = ""
+                for seg in done { text = engine.join(text, seg.output, options: options) }
+                if capitalizeFirst, let f = text.first, f.isLowercase, f.isASCII { text = f.uppercased() + text.dropFirst() }
+                send(s(text))
+                raw = String(raw.dropFirst(last.end)).trimmingCharacters(in: CharacterSet(charactersIn: " "))
+                capitalizeFirst = false
+                if raw.isEmpty { reset(); return }
+                a = engine.analyze(raw, options: options)
+            }
         }
-        let a = engine.analyze(raw, options: options)
-        var list = a.candidates
+
+        // Choices: Chinese words for the first Chinese part; otherwise the original spelling if we changed it.
+        var list: [Candidate] = []
         let key = raw.trimmingCharacters(in: .whitespaces)
-        if let ai = AIAssist.shared.cached(key), AIAssist.shared.isAvailable {
-            list.removeAll { $0.consumes >= raw.count && $0.output == ai }
-            list.insert(Candidate(display: ai, output: ai, consumes: raw.count, kind: .ai), at: 0)
+        if let ai = AIAssist.shared.cached(key), AIAssist.shared.isAvailable, ai != a.preview {
+            list.append(Candidate(display: ai, output: ai, consumes: raw.count, kind: .ai))
         }
+        if a.hasChinese {
+            list.append(contentsOf: a.candidates.filter { $0.kind == .word || $0.kind == .alternative })
+            if let eng = a.candidates.first(where: { $0.kind == .english }) { list.append(eng) }
+        } else if let eng = a.candidates.first(where: { $0.kind == .english }), eng.output != a.preview {
+            list.append(Candidate(display: eng.display, output: eng.output, consumes: raw.count, kind: .english))
+            if a.tokens.contains(where: { $0.ambiguous }), let alt = a.candidates.first(where: { $0.kind == .alternative }) {
+                list.append(alt)
+            }
+        } else if a.tokens.contains(where: { $0.ambiguous }), let alt = a.candidates.first(where: { $0.kind == .alternative }) {
+            list.append(alt)
+        }
+        current = a
         candidates = list
         highlighted = 0
+        userMovedHighlight = false
         render()
-        scheduleAI(analysis: a)
+        scheduleAI(a)
     }
 
-    private func scheduleAI(analysis a: Analysis) {
+    private var current: Analysis?
+
+    private var preview: String {
+        if userMovedHighlight, candidates.indices.contains(highlighted), candidates[highlighted].consumes >= raw.count {
+            return s(candidates[highlighted].output)
+        }
+        if let ai = AIAssist.shared.cached(raw.trimmingCharacters(in: .whitespaces)), AIAssist.shared.isAvailable { return s(ai) }
+        return s(current?.preview ?? raw)
+    }
+
+    private func scheduleAI(_ a: Analysis) {
         aiWork?.cancel()
         let key = raw.trimmingCharacters(in: .whitespaces)
-        guard AIAssist.shared.isAvailable, AIAssist.shared.cached(key) == nil else { return }
-        // Worth asking when there's context to use: several words, a mix, or unknown English words.
-        let worth = a.tokens.count >= 2 || a.tokens.contains { $0.ambiguous } || a.tokens.contains { $0.kind == .english && $0.text.count >= 4 }
-        guard worth else { return }
+        guard AIAssist.shared.isAvailable, AIAssist.shared.cached(key) == nil, a.tokens.count >= 2 else { return }
         let guess = a.preview
         let work = DispatchWorkItem { [weak self] in
             guard let self = self, self.raw.trimmingCharacters(in: .whitespaces) == key else { return }
-            self.aiPendingFor = key
-            self.render()
             AIAssist.shared.convert(raw: key, localGuess: guess) { [weak self] result in
-                guard let self = self else { return }
-                if self.aiPendingFor == key { self.aiPendingFor = nil }
-                guard result != nil, self.raw.trimmingCharacters(in: .whitespaces) == key else {
-                    if self.isComposing { self.render() }
-                    return
-                }
-                self.refresh() // picks the cached AI result up as the first candidate
+                guard let self = self, result != nil, self.raw.trimmingCharacters(in: .whitespaces) == key else { return }
+                self.refresh(autoSend: false)
             }
         }
         aiWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45, execute: work)
-    }
-
-    /// The text that would be sent right now (fixed part + highlighted/first full candidate).
-    private func currentOutput() -> String {
-        guard !raw.trimmingCharacters(in: .whitespaces).isEmpty else { return fixed }
-        let full = candidates.indices.contains(highlighted) && candidates[highlighted].consumes >= raw.count
-            ? candidates[highlighted] : candidates.first
-        return join(fixed, s(full?.output ?? raw))
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
     }
 
     private var pageStart: Int { (highlighted / pageSize) * pageSize }
@@ -302,91 +324,104 @@ final class MixKeyInputController: IMKInputController {
     private func moveHighlight(_ delta: Int) {
         guard !candidates.isEmpty else { return }
         highlighted = max(0, min(candidates.count - 1, highlighted + delta))
+        userMovedHighlight = true
         render()
     }
 
     private func select(_ index: Int) {
-        guard candidates.indices.contains(index) else {
-            if candidates.isEmpty && isComposing { commit(fixed) }
-            return
-        }
+        guard candidates.indices.contains(index) else { return }
         let c = candidates[index]
         if c.consumes >= raw.count {
-            commit(join(fixed, s(c.output)))
+            send(s(c.output))
+            reset(clearMarked: false)
         } else {
-            fixed = join(fixed, s(c.output))
+            send(s(c.output))
             raw = String(raw.dropFirst(c.consumes)).trimmingCharacters(in: .whitespaces)
-            if raw.isEmpty { commit(fixed) } else { refresh() }
+            capitalizeFirst = false
+            if raw.isEmpty { reset(clearMarked: false) } else { refresh(autoSend: false) }
         }
     }
 
-    private func commitTop() {
-        let out = currentOutput()
-        commit(out)
-    }
+    // MARK: - Sending text
 
-    /// Sends exactly what was typed (Shift+Enter).
-    private func commitLiteral() {
-        commit(join(fixed, raw.trimmingCharacters(in: .whitespaces)))
-    }
-
-    private func commit(_ text: String) {
-        if !text.isEmpty {
-            cl()?.insertText(text, replacementRange: MixKeyInputController.notFound)
-            lastCommitEndedChinese = text.last.map { ScriptConverter.isCJK($0) } ?? false
+    /// Sends everything that's open. Returns what was sent.
+    @discardableResult
+    private func sendAll(trailingSpace: Bool = false) -> String {
+        guard isComposing else { return "" }
+        var out = preview
+        // The last word is finished now: let it get its spelling fix too, as long as nothing
+        // switches between Chinese and English (what you saw is what you get).
+        if !userMovedHighlight, !raw.hasSuffix(" "), let engine = engine, let shown = current {
+            let done = engine.analyze(raw + " ", options: options)
+            if done.tokens.map(\.kind) == shown.tokens.map(\.kind), AIAssist.shared.cached(raw.trimmingCharacters(in: .whitespaces)) == nil {
+                out = s(done.preview)
+            }
         }
-        reset(clearMarked: text.isEmpty)
+        if trailingSpace, let l = out.last, l.isASCII, l.isLetter || l.isNumber { out += " " }
+        send(out)
+        reset(clearMarked: false)
+        return out
+    }
+
+    /// Shift+Enter: send exactly what was typed.
+    private func sendLiteral() {
+        send(raw.trimmingCharacters(in: .whitespaces))
+        reset(clearMarked: false)
+    }
+
+    private func send(_ text: String) {
+        guard !text.isEmpty else { return }
+        let t = withLead(text)
+        insert(t)
+        lead = String(t.suffix(1))
+        lastSentChinese = t.last.map { ScriptConverter.isCJK($0) } ?? false
+    }
+
+    private func insert(_ text: String) {
+        cl()?.insertText(text, replacementRange: MixKeyInputController.notFound)
     }
 
     private func reset(clearMarked: Bool = true) {
         raw = ""
-        fixed = ""
         candidates = []
+        current = nil
         highlighted = 0
+        userMovedHighlight = false
         aiWork?.cancel()
-        aiPendingFor = nil
         if clearMarked {
             cl()?.setMarkedText("", selectionRange: NSRange(location: 0, length: 0),
-                                    replacementRange: MixKeyInputController.notFound)
+                                replacementRange: MixKeyInputController.notFound)
         }
+        barVisible = false
         shared.panel.hide()
-    }
-
-    private func endsLatin(_ s: String) -> Bool {
-        guard let l = s.last else { return false }
-        return l.isASCII && (l.isLetter || l.isNumber)
     }
 
     // MARK: - Drawing
 
     private func render() {
-        guard let client = cl() else { dlog("render: no client"); return }
-        let composed = currentOutput()
-        dlog("render '\(composed)'")
-        let attrs: [NSAttributedString.Key: Any] = [.underlineStyle: NSUnderlineStyle.single.rawValue]
-        client.setMarkedText(NSAttributedString(string: composed, attributes: attrs),
-                             selectionRange: NSRange(location: (composed as NSString).length, length: 0),
-                             replacementRange: MixKeyInputController.notFound)
+        guard let client = cl() else { return }
+        let composed = withLead(preview)
+        client.setMarkedText(NSAttributedString(string: composed, attributes: [
+            .underlineStyle: NSUnderlineStyle.single.rawValue,
+        ]), selectionRange: NSRange(location: (composed as NSString).length, length: 0),
+            replacementRange: MixKeyInputController.notFound)
 
+        guard !candidates.isEmpty else {
+            barVisible = false
+            shared.panel.hide()
+            return
+        }
         let start = pageStart
-        let page = candidates.dropFirst(start).prefix(pageSize)
-        let items: [CandidateView.Item] = page.enumerated().map { i, c in
+        let items: [CandidateView.Item] = candidates.dropFirst(start).prefix(pageSize).enumerated().map { i, c in
             let text = s(c.display)
-            var badge: String?
-            switch c.kind {
-            case .ai: badge = "✨ AI"
-            case .english: badge = "ABC"
-            default: badge = nil
-            }
-            return CandidateView.Item(number: i + 1, text: text, reading: shared.reading(text), badge: badge)
+            let badge: String? = c.kind == .ai ? "✨" : (c.kind == .english ? "ABC" : nil)
+            return CandidateView.Item(number: i + 1, text: text,
+                                      reading: Settings.shared.showPinyin ? shared.reading(text) : nil, badge: badge)
         }
-        var status = (script == .traditional ? "繁體" : "简体") + (Settings.shared.scriptMode == .auto ? " auto (\(scriptReason))" : "")
-        if AIAssist.shared.isAvailable {
-            status += aiPendingFor != nil ? "  ·  ✨ AI thinking…" : "  ·  ✨ AI on"
-        }
-        status += "  ·  Enter ✓  Space×2 ✓  Esc ✕"
-        if candidates.count > pageSize { status += "  ·  \(start / pageSize + 1)/\((candidates.count + pageSize - 1) / pageSize)" }
-        let model = CandidatePanel.Model(preview: composed, items: items, highlighted: highlighted - start, status: status)
+        var hint = script == .traditional ? "繁" : "简"
+        if candidates.count > pageSize { hint += " \(start / pageSize + 1)/\((candidates.count + pageSize - 1) / pageSize)" }
+        let model = CandidatePanel.Model(items: items, highlighted: userMovedHighlight ? highlighted - start : -1, hint: hint)
+        barVisible = true
         shared.panel.show(model, cursorRect: cursorRect(client))
     }
 
@@ -400,18 +435,18 @@ final class MixKeyInputController: IMKInputController {
         return rect
     }
 
-    private func flashStatus(_ text: String) {
+    private func flash(_ text: String) {
         guard let client = cl() else { return }
-        let model = CandidatePanel.Model(preview: text, items: [], highlighted: 0, status: "")
-        shared.panel.show(model, cursorRect: cursorRect(client))
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+        shared.panel.show(CandidatePanel.Model(items: [CandidateView.Item(number: 0, text: text, reading: nil, badge: nil)],
+                                               highlighted: -1, hint: ""), cursorRect: cursorRect(client))
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
             if self?.isComposing == false { self?.shared.panel.hide() }
         }
     }
 
     // MARK: - Script
 
-    private func detectScript() {
+    func detectScript() {
         lastDetect = Date()
         switch Settings.shared.scriptMode {
         case .simplified: script = .simplified; scriptReason = "fixed"
@@ -421,125 +456,5 @@ final class MixKeyInputController: IMKInputController {
             script = r?.script ?? Settings.shared.defaultScript
             scriptReason = r?.reason ?? "default"
         }
-    }
-
-    // MARK: - Menu (shown under the input menu in the menu bar)
-
-    override func menu() -> NSMenu! {
-        let m = NSMenu(title: "MixKey")
-        func item(_ title: String, _ action: Selector, on: Bool = false, tag: Int = 0) -> NSMenuItem {
-            let i = NSMenuItem(title: title, action: action, keyEquivalent: "")
-            i.target = self
-            i.state = on ? .on : .off
-            i.tag = tag
-            return i
-        }
-        let mode = Settings.shared.scriptMode
-        m.addItem(item("Chinese: Auto-detect (简/繁)", #selector(menuScript(_:)), on: mode == .auto, tag: 0))
-        m.addItem(item("Chinese: Always Simplified 简体", #selector(menuScript(_:)), on: mode == .simplified, tag: 1))
-        m.addItem(item("Chinese: Always Traditional 繁體", #selector(menuScript(_:)), on: mode == .traditional, tag: 2))
-        m.addItem(.separator())
-        m.addItem(item("Space between Chinese and English", #selector(menuToggleSpace(_:)), on: Settings.shared.spaceBetweenScripts))
-        m.addItem(item("Capitalise start of sentences", #selector(menuToggleCaps(_:)), on: Settings.shared.capitalizeSentences))
-        m.addItem(item("Fix English spelling", #selector(menuToggleSpell(_:)), on: Settings.shared.autoFixSpelling))
-        m.addItem(item("Show pinyin under words", #selector(menuTogglePinyin(_:)), on: Settings.shared.showPinyin))
-        m.addItem(item("Bigger text", #selector(menuBigger(_:))))
-        m.addItem(item("Smaller text", #selector(menuSmaller(_:))))
-        m.addItem(.separator())
-        let hasKey = Settings.shared.apiKey != nil
-        m.addItem(item(hasKey ? "✨ AI assist (Claude)" : "✨ AI assist (add API key first)", #selector(menuToggleAI(_:)),
-                       on: hasKey && Settings.shared.aiEnabled))
-        m.addItem(item(hasKey ? "Change Claude API key…" : "Add Claude API key…", #selector(menuAPIKey(_:))))
-        m.addItem(.separator())
-        m.addItem(item(ScriptDetector.hasAccessibility ? "Website detection: allowed ✓" : "Allow website detection (Accessibility)…",
-                       #selector(menuAccessibility(_:))))
-        m.addItem(item("About MixKey…", #selector(menuAbout(_:))))
-        return m
-    }
-
-    /// IMK passes either the NSMenuItem or a dictionary containing it.
-    private func menuItem(_ sender: Any?) -> NSMenuItem? {
-        if let i = sender as? NSMenuItem { return i }
-        if let d = sender as? [String: Any] { return d[kIMKCommandMenuItemName] as? NSMenuItem }
-        return nil
-    }
-
-    @objc func menuScript(_ sender: Any?) {
-        let tag = menuItem(sender)?.tag ?? 0
-        Settings.shared.scriptMode = [.auto, .simplified, .traditional][tag]
-        detectScript()
-    }
-    @objc func menuToggleSpace(_ sender: Any?) { Settings.shared.spaceBetweenScripts.toggle() }
-    @objc func menuToggleCaps(_ sender: Any?) { Settings.shared.capitalizeSentences.toggle() }
-    @objc func menuToggleSpell(_ sender: Any?) { Settings.shared.autoFixSpelling.toggle() }
-    @objc func menuTogglePinyin(_ sender: Any?) { Settings.shared.showPinyin.toggle() }
-    @objc func menuBigger(_ sender: Any?) { Settings.shared.fontSize = min(40, Settings.shared.fontSize + 2) }
-    @objc func menuSmaller(_ sender: Any?) { Settings.shared.fontSize = max(13, Settings.shared.fontSize - 2) }
-    @objc func menuToggleAI(_ sender: Any?) {
-        if Settings.shared.apiKey == nil { menuAPIKey(sender); return }
-        Settings.shared.aiEnabled.toggle()
-    }
-    @objc func menuAccessibility(_ sender: Any?) { ScriptDetector.requestAccessibility() }
-
-    @objc func menuAPIKey(_ sender: Any?) {
-        NSApp.activate(ignoringOtherApps: true)
-        let alert = NSAlert()
-        alert.messageText = "Claude API key"
-        alert.informativeText = """
-        MixKey can use Claude to fix whole sentences (homophones, spelling, place names). \
-        Only the letters you are typing are sent — never the rest of your document. \
-        Password fields never reach input methods.
-
-        The key is saved only on this Mac (~/Library/Application Support/MixKey, readable only by you). \
-        Get a key at console.anthropic.com.
-        """
-        let field = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 340, height: 24))
-        field.placeholderString = "sk-ant-…"
-        alert.accessoryView = field
-        alert.addButton(withTitle: "Save")
-        alert.addButton(withTitle: "Cancel")
-        if Settings.shared.apiKey != nil { alert.addButton(withTitle: "Remove key") }
-        alert.window.initialFirstResponder = field
-        switch alert.runModal() {
-        case .alertFirstButtonReturn:
-            if !field.stringValue.isEmpty {
-                Settings.shared.apiKey = field.stringValue
-                Settings.shared.aiEnabled = true
-                AIAssist.shared.warmUp()
-            }
-        case .alertThirdButtonReturn:
-            Settings.shared.apiKey = nil
-        default:
-            break
-        }
-    }
-
-    @objc func menuAbout(_ sender: Any?) {
-        NSApp.activate(ignoringOtherApps: true)
-        let alert = NSAlert()
-        let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
-        alert.messageText = "MixKey 混打 \(v)"
-        alert.informativeText = """
-        Type pinyin and English together — no switching.
-
-        • ni hao → 你好      • port dickson → Port Dickson
-        • Enter or Space twice: send    • 1–9: choose    • Esc: cancel
-        • Shift+Enter: send letters exactly as typed
-        • Tap Shift: English-only mode on/off
-        • , . ? ! after Chinese become ，。？！
-        """
-        alert.runModal()
-    }
-}
-
-/// Debug logging to ~/Library/Logs/MixKey.log: `defaults write com.mixkey.inputmethod.MixKey debug -bool YES`.
-func dlog(_ msg: @autoclosure () -> String) {
-    guard UserDefaults.standard.bool(forKey: "debug") else { return }
-    let line = "\(ISO8601DateFormatter.string(from: Date(), timeZone: .current, formatOptions: [.withTime, .withFractionalSeconds])) \(msg())\n"
-    let url = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0].appendingPathComponent("Logs/MixKey.log")
-    if let h = try? FileHandle(forWritingTo: url) {
-        h.seekToEndOfFile(); h.write(Data(line.utf8)); try? h.close()
-    } else {
-        try? Data(line.utf8).write(to: url)
     }
 }

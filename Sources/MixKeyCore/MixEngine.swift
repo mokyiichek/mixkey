@@ -39,8 +39,18 @@ public struct Token: Equatable {
     public var ambiguous: Bool
 }
 
+/// A piece of the converted text that maps to a stretch of what was typed.
+/// Chinese runs are one segment; English is one segment per word (or per multi-word name).
+public struct Segment: Equatable {
+    public let kind: Token.Kind
+    public let start: Int
+    public let end: Int
+    public let output: String
+}
+
 public struct Analysis {
     public let raw: String
+    public var segments: [Segment] = []
     public let tokens: [Token]
     /// Best guess for the whole buffer.
     public let preview: String
@@ -56,14 +66,51 @@ public final class MixEngine {
     public let pinyin: PinyinConverter
     public let script: ScriptConverter
 
-    /// Optional fixer for unknown English words (spelling / capitalisation), e.g. backed by NSSpellChecker.
-    /// Receives a lowercase word not found in the frequency list; returns a replacement or nil.
-    public var englishFixer: ((String) -> String?)?
+    /// Capitalises names the frequency list doesn't know ("dickson" -> "Dickson"), e.g. via NSSpellChecker.
+    public var englishCapitalizer: ((String) -> String?)?
+    /// Extra spelling guesses for a word (e.g. NSSpellChecker). Return nil to leave the word alone
+    /// (for example because it is valid Malay).
+    public var englishGuesses: ((String) -> (correction: String?, guesses: [String])?)?
+    public var fixSpelling = true
+    public let speller: SpellFixer
 
     public init(lexiconPath: String) throws {
         lexicon = try Lexicon(path: lexiconPath)
         pinyin = PinyinConverter(lexicon: lexicon)
         script = ScriptConverter(lexicon: lexicon)
+        speller = SpellFixer(lexicon: lexicon)
+    }
+
+    /// Spelling fix for one complete lowercase English word, or nil to keep it.
+    public func fixWord(_ w: String) -> String? {
+        guard w == w.lowercased(), w.count >= 2, !SpellFixer.protected.contains(w) else { return nil }
+        let rank = lexicon.englishRank(w)
+        if rank == nil, let cap = englishCapitalizer?(w) { return cap }
+        guard fixSpelling else { return nil }
+        if let r = rank, r <= 20000 { return nil } // a normal English word
+        var extra: [String] = []
+        var preferred: String?
+        if let hook = englishGuesses {
+            guard let g = hook(w) else { return nil } // e.g. valid Malay: leave it
+            extra = g.guesses
+            preferred = g.correction
+        }
+        // When the system has an opinion, a far-fetched guess of ours that it doesn't share is dropped,
+        // and its own first guess is used when we find nothing close ("dfiifcuilteiy" -> "difficulty").
+        let systemFallback: String? = extra.first.flatMap { g in
+            g.first == w.first && abs(g.count - w.count) <= 4 && !g.contains(" ") ? g : nil
+        }
+        guard let fix = speller.best(for: w, extra: extra, preferred: preferred) else {
+            return rank == nil ? systemFallback : nil
+        }
+        if englishGuesses != nil, fix.cost > 1.6, fix.word != preferred, !extra.contains(fix.word) {
+            return rank == nil ? systemFallback : nil
+        }
+        if rank != nil {
+            // rare but real word ("lal"): only swap for a much more common, very close word ("all")
+            return fix.cost <= 1 && fix.rank <= 3000 ? fix.word : nil
+        }
+        return fix.word
     }
 
     // MARK: - Tokens
@@ -215,8 +262,13 @@ public final class MixEngine {
     }
 
     /// Fixes casing of an English run: proper nouns ("port dickson" -> "Port Dickson"), "i" -> "I".
-    public func caseEnglish(_ words: [String], fix: Bool = true) -> [String] {
-        var out: [String] = []
+    public func caseEnglish(_ words: [String], fix: Bool = true, lastComplete: Bool = true) -> [String] {
+        caseEnglishGroups(words, fix: fix, lastComplete: lastComplete).map(\.text)
+    }
+
+    /// Like caseEnglish, but keeps multi-word names together: [(how many typed words, text)].
+    public func caseEnglishGroups(_ words: [String], fix: Bool = true, lastComplete: Bool = true) -> [(count: Int, text: String)] {
+        var out: [(count: Int, text: String)] = []
         var i = 0
         while i < words.count {
             var matched = false
@@ -225,7 +277,7 @@ public final class MixEngine {
                 let phrase = words[i..<(i + n)].joined(separator: " ")
                 // only adjust words the user typed in lowercase
                 if phrase == phrase.lowercased(), let proper = lexicon.properNoun(phrase) {
-                    out.append(contentsOf: proper.split(separator: " ").map(String.init))
+                    out.append((n, proper))
                     i += n
                     matched = true
                     break
@@ -234,15 +286,15 @@ public final class MixEngine {
             }
             if !matched {
                 let w = words[i]
+                let complete = i < words.count - 1 || lastComplete
                 switch w {
-                case "i": out.append("I")
-                case "i'm", "i'll", "i've", "i'd": out.append("I" + w.dropFirst())
+                case "i": out.append((1, "I"))
+                case "i'm", "i'll", "i've", "i'd": out.append((1, "I" + w.dropFirst()))
                 default:
-                    if fix, w == w.lowercased(), w.count >= 2, lexicon.englishRank(w) == nil,
-                       let fixer = englishFixer, let better = fixer(w) {
-                        out.append(better)
+                    if fix, complete, let better = fixWord(w) {
+                        out.append((1, better))
                     } else {
-                        out.append(w)
+                        out.append((1, w))
                     }
                 }
                 i += 1
@@ -288,8 +340,23 @@ public final class MixEngine {
                     continue
                 }
             }
-            converted.append(caseEnglish(run.tokens.map(\.text)).joined(separator: " "))
+            converted.append(caseEnglish(run.tokens.map(\.text), lastComplete: endsWithSpace || idx < rs.count - 1).joined(separator: " "))
             results.append(nil)
+        }
+
+        // Segments: Chinese run = 1 segment; English = 1 per word / name.
+        var segments: [Segment] = []
+        for (idx, run) in rs.enumerated() {
+            if run.kind == .chinese, results[idx] != nil {
+                segments.append(Segment(kind: .chinese, start: run.start, end: run.end, output: converted[idx]))
+            } else {
+                var t = 0
+                for g in caseEnglishGroups(run.tokens.map(\.text), lastComplete: endsWithSpace || idx < rs.count - 1) {
+                    let first = run.tokens[t], last = run.tokens[t + g.count - 1]
+                    segments.append(Segment(kind: .english, start: first.start, end: last.end, output: g.text))
+                    t += g.count
+                }
+            }
         }
 
         func assemble(_ parts: [String]) -> String {
@@ -359,6 +426,7 @@ public final class MixEngine {
             seen.insert(key)
             return !c.display.isEmpty
         }
-        return Analysis(raw: raw, tokens: tokens, preview: preview, previewReading: reading.isEmpty ? nil : reading, candidates: cands)
+        return Analysis(raw: raw, segments: segments, tokens: tokens, preview: preview,
+                        previewReading: reading.isEmpty ? nil : reading, candidates: cands)
     }
 }

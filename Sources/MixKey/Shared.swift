@@ -20,35 +20,32 @@ final class Shared {
             engine = nil
         }
         detector = engine.map { ScriptDetector(converter: $0.script) }
-        engine?.englishFixer = Shared.fixEnglish
+        engine?.englishCapitalizer = Shared.capitalize
+        engine?.englishGuesses = Shared.guesses
     }
 
-    /// Local (offline) spelling help from macOS:
-    ///  - "dickson" -> "Dickson" (only valid when capitalised = a name)
-    ///  - "recieve" -> "receive", "dfiifcuilteiy" -> "difficulty"
-    /// Words that are valid Malay are left alone.
-    static func fixEnglish(_ word: String) -> String? {
-        let checker = NSSpellChecker.shared
-        func valid(_ w: String, _ lang: String) -> Bool {
-            checker.checkSpelling(of: w, startingAt: 0, language: lang, wrap: false,
-                                  inSpellDocumentWithTag: 0, wordCount: nil).location == NSNotFound
-        }
-        let lang = "en"
-        let misspelled = !valid(word, lang)
+    /// macOS spell checker helpers used by the engine's fixer.
+    static let checker = NSSpellChecker.shared
+
+    static func valid(_ w: String, _ lang: String) -> Bool {
+        checker.checkSpelling(of: w, startingAt: 0, language: lang, wrap: false,
+                              inSpellDocumentWithTag: 0, wordCount: nil).location == NSNotFound
+    }
+
+    /// "dickson" -> "Dickson": only valid when capitalised, so it's a name.
+    static func capitalize(_ word: String) -> String? {
         let cap = word.prefix(1).uppercased() + word.dropFirst()
-        if misspelled && valid(cap, lang) { return cap }
-        guard Settings.shared.autoFixSpelling, word.count >= 3 else { return nil }
+        return !valid(word, "en") && valid(cap, "en") ? cap : nil
+    }
+
+    /// The system's autocorrection + guesses; nil = leave the word alone (valid English or Malay).
+    static func guesses(_ word: String) -> (correction: String?, guesses: [String])? {
+        if valid(word, "en") { return nil }
         if checker.availableLanguages.contains("ms"), valid(word, "ms") { return nil }
         let range = NSRange(location: 0, length: (word as NSString).length)
-        if let c = checker.correction(forWordRange: range, in: word, language: lang, inSpellDocumentWithTag: 0),
-           c.lowercased() != word {
-            return c
-        }
-        if misspelled, word.count >= 4,
-           let g = checker.guesses(forWordRange: range, in: word, language: lang, inSpellDocumentWithTag: 0)?.first {
-            return g
-        }
-        return nil
+        let corr = checker.correction(forWordRange: range, in: word, language: "en", inSpellDocumentWithTag: 0)
+        let g = checker.guesses(forWordRange: range, in: word, language: "en", inSpellDocumentWithTag: 0) ?? []
+        return (corr, Array(g.prefix(6)))
     }
 
     /// Pinyin with tone marks for Chinese text, e.g. 明天 -> míng tiān.

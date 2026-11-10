@@ -19,8 +19,8 @@ final class Settings {
             "autoFixSpelling": true,
             "aiEnabled": true,
             "aiModel": "claude-haiku-5-5",
-            "fontSize": 22.0,
-            "showPinyin": true,
+            "fontSize": 15.0,
+            "showPinyin": false,
         ])
     }
 
