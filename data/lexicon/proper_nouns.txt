@@ -1,0 +1,259 @@
+# MixKey proper-noun list: one name per line, written with the correct capitalisation.
+# Typing the lowercase form (e.g. "port dickson") turns into this spelling.
+# Add your own names freely. Lines starting with # are ignored.
+
+# --- Malaysia: states & federal territories
+Johor
+Kedah
+Kelantan
+Melaka
+Malacca
+Negeri Sembilan
+Pahang
+Penang
+Pulau Pinang
+Perak
+Perlis
+Sabah
+Sarawak
+Selangor
+Terengganu
+Kuala Lumpur
+Putrajaya
+Labuan
+Malaysia
+Malaysian
+Peninsular Malaysia
+Borneo
+
+# --- Malaysia: cities & towns
+Port Dickson
+Seremban
+Nilai
+Rembau
+Kuala Pilah
+Tampin
+Bahau
+Shah Alam
+Petaling Jaya
+Subang Jaya
+Klang
+Port Klang
+Kajang
+Bangi
+Cyberjaya
+Puchong
+Seri Kembangan
+Ampang
+Cheras
+Kepong
+Setapak
+Rawang
+Selayang
+Sungai Buloh
+Damansara
+Mont Kiara
+Bangsar
+Bukit Bintang
+Bukit Jalil
+Sentul
+Kuala Selangor
+Sekinchan
+Sabak Bernam
+Banting
+Sepang
+Dengkil
+Semenyih
+Genting Highlands
+Cameron Highlands
+Fraser's Hill
+Bentong
+Raub
+Kuantan
+Temerloh
+Cherating
+Ipoh
+Taiping
+Teluk Intan
+Lumut
+Pangkor
+Kampar
+Sitiawan
+Batu Gajah
+Kuala Kangsar
+George Town
+Butterworth
+Bukit Mertajam
+Bayan Lepas
+Batu Ferringhi
+Alor Setar
+Sungai Petani
+Kulim
+Langkawi
+Kangar
+Kota Bharu
+Kuala Terengganu
+Kemaman
+Johor Bahru
+Iskandar Puteri
+Skudai
+Kulai
+Batu Pahat
+Muar
+Kluang
+Segamat
+Mersing
+Pontian
+Kota Tinggi
+Desaru
+Ayer Keroh
+Jasin
+Alor Gajah
+Kota Kinabalu
+Sandakan
+Tawau
+Lahad Datu
+Semporna
+Keningau
+Kuching
+Miri
+Sibu
+Bintulu
+Sri Aman
+Mukah
+
+# --- Malaysia: landmarks & common names
+KLCC
+Petronas Twin Towers
+Merdeka
+Bukit Bintang
+Mid Valley
+Sunway
+Genting
+KLIA
+Changi
+
+# --- Singapore & region
+Singapore
+Jurong
+Woodlands
+Tampines
+Orchard Road
+Sentosa
+Thailand
+Bangkok
+Phuket
+Hat Yai
+Indonesia
+Jakarta
+Bali
+Batam
+Medan
+Vietnam
+Hanoi
+Ho Chi Minh City
+Philippines
+Manila
+Cambodia
+Phnom Penh
+Myanmar
+Brunei
+
+# --- Greater China
+China
+Beijing
+Shanghai
+Guangzhou
+Shenzhen
+Hong Kong
+Macau
+Taiwan
+Taipei
+Kaohsiung
+Taichung
+Xiamen
+Chengdu
+Chongqing
+Hangzhou
+Wuhan
+Xi'an
+
+# --- World
+Japan
+Tokyo
+Osaka
+Kyoto
+Korea
+Seoul
+India
+Australia
+Sydney
+Melbourne
+Perth
+New Zealand
+United Kingdom
+London
+America
+United States
+New York
+Los Angeles
+San Francisco
+Canada
+Toronto
+Vancouver
+Dubai
+Europe
+Paris
+France
+Germany
+Italy
+Spain
+
+# --- Days, months, languages
+Monday
+Tuesday
+Wednesday
+Thursday
+Friday
+Saturday
+Sunday
+January
+February
+April
+June
+July
+August
+September
+October
+November
+December
+English
+Chinese
+Mandarin
+Cantonese
+Hokkien
+Malay
+Bahasa Melayu
+Tamil
+
+# --- Tech & brands
+iPhone
+iPad
+MacBook
+macOS
+WhatsApp
+Facebook
+Instagram
+YouTube
+Google
+Gmail
+Telegram
+WeChat
+TikTok
+Shopee
+Lazada
+Touch 'n Go
+Dropbox
+GitHub
+Claude
+ChatGPT
