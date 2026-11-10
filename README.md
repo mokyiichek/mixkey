@@ -16,6 +16,8 @@ MixKey is a macOS input method that works out, word by word, whether you are typ
 It is built for people who find switching keyboards tiring, and for people with reading or spelling difficulty:
 big, clear candidate window, pinyin with tone marks under each choice, and automatic spelling fixes.
 
+![MixKey colour themes](docs/themes.png)
+
 ## How it works
 
 1. **Local engine (instant, offline).** A pinyin word lattice over ~550k words picks the most likely Chinese
@@ -43,8 +45,9 @@ big, clear candidate window, pinyin with tone marks under each choice, and autom
 | **Tap Shift** | English-only mode on/off |
 | `, . ? ! ; :` | sends, and becomes `，。？！；：` after Chinese |
 
-Settings live in the input menu in the menu bar (the 混 icon): Simplified / Traditional / Auto, spacing between
-Chinese and English, capitalisation, spelling fixes, pinyin hints, text size, AI assist and the Claude API key.
+Settings live in the input menu in the menu bar (the 混 icon): Simplified / Traditional / Auto, colour theme 🎨,
+spacing between Chinese and English, capitalisation, spelling fixes, pinyin hints, text size, AI assist,
+the Claude API key, and "Forget words MixKey learned".
 
 ## Install (macOS 13+, Apple Silicon or Intel)
 

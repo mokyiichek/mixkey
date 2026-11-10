@@ -21,6 +21,7 @@ final class Settings {
             "aiModel": "claude-haiku-5-5",
             "fontSize": 15.0,
             "showPinyin": false,
+            "theme": "ocean",
         ])
     }
 
@@ -53,6 +54,10 @@ final class Settings {
     var fontSize: CGFloat {
         get { CGFloat(d.double(forKey: "fontSize")) }
         set { d.set(Double(newValue), forKey: "fontSize") }
+    }
+    var themeID: String {
+        get { d.string(forKey: "theme") ?? "ocean" }
+        set { d.set(newValue, forKey: "theme") }
     }
     var showPinyin: Bool {
         get { d.bool(forKey: "showPinyin") }

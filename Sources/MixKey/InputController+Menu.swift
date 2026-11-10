@@ -24,6 +24,13 @@ extension MixKeyInputController {
         m.addItem(item("Capitalise start of sentences", #selector(menuToggleCaps(_:)), on: Settings.shared.capitalizeSentences))
         m.addItem(item("Fix English spelling", #selector(menuToggleSpell(_:)), on: Settings.shared.autoFixSpelling))
         m.addItem(item("Show pinyin under words", #selector(menuTogglePinyin(_:)), on: Settings.shared.showPinyin))
+        let themes = NSMenu(title: "Colour theme")
+        for (i, t) in Theme.all.enumerated() {
+            themes.addItem(item(t.name, #selector(menuTheme(_:)), on: t.id == Theme.current.id, tag: i))
+        }
+        let themeItem = NSMenuItem(title: "Colour theme 🎨", action: nil, keyEquivalent: "")
+        themeItem.submenu = themes
+        m.addItem(themeItem)
         m.addItem(item("Bigger text", #selector(menuBigger(_:))))
         m.addItem(item("Smaller text", #selector(menuSmaller(_:))))
         m.addItem(.separator())
@@ -60,6 +67,10 @@ extension MixKeyInputController {
     @objc func menuToggleAI(_ sender: Any?) {
         if Settings.shared.apiKey == nil { menuAPIKey(sender); return }
         Settings.shared.aiEnabled.toggle()
+    }
+    @objc func menuTheme(_ sender: Any?) {
+        let tag = menuItem(sender)?.tag ?? 0
+        if Theme.all.indices.contains(tag) { Settings.shared.themeID = Theme.all[tag].id }
     }
     @objc func menuForget(_ sender: Any?) {
         Shared.shared.engine?.lexicon.user?.clear()

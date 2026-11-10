@@ -472,7 +472,8 @@ final class MixKeyInputController: IMKInputController {
         }
         var hint = script == .traditional ? "繁" : "简"
         if candidates.count > pageSize { hint += " \(start / pageSize + 1)/\((candidates.count + pageSize - 1) / pageSize)" }
-        let model = CandidatePanel.Model(items: items, highlighted: userMovedHighlight ? highlighted - start : -1, hint: hint)
+        let model = CandidatePanel.Model(items: items, highlighted: userMovedHighlight ? highlighted - start : -1, hint: hint,
+                                         firstIsCurrent: current?.hasChinese == true && start == 0)
         barVisible = true
         shared.panel.show(model, cursorRect: cursorRect(client))
     }
@@ -495,7 +496,7 @@ final class MixKeyInputController: IMKInputController {
     private func flash(_ text: String) {
         guard let client = cl() else { return }
         shared.panel.show(CandidatePanel.Model(items: [CandidateView.Item(number: 0, text: text, reading: nil, badge: nil)],
-                                               highlighted: -1, hint: ""), cursorRect: cursorRect(client))
+                                               highlighted: 0, hint: ""), cursorRect: cursorRect(client))
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
             if self?.isComposing == false { self?.shared.panel.hide() }
         }

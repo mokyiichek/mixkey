@@ -1,7 +1,8 @@
 import AppKit
 import MixKeyCore
 
-/// A small, one-line bar of numbered choices shown just under the cursor.
+/// A small floating bar of rounded "chips" just under the cursor.
+/// The chip for the word that will be typed is filled with the theme colour.
 final class CandidatePanel: NSPanel {
     private let view = CandidateView()
     var onSelect: ((Int) -> Void)? {
@@ -10,7 +11,7 @@ final class CandidatePanel: NSPanel {
     }
 
     init() {
-        super.init(contentRect: NSRect(x: 0, y: 0, width: 200, height: 30),
+        super.init(contentRect: NSRect(x: 0, y: 0, width: 200, height: 34),
                    styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
         level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.cursorWindow)) - 1)
         isOpaque = false
@@ -23,22 +24,25 @@ final class CandidatePanel: NSPanel {
 
     struct Model {
         var items: [CandidateView.Item]
-        /// -1 = nothing highlighted (the inline text is what will be sent)
+        /// Chip the user moved to with Tab/arrows; -1 = none.
         var highlighted: Int
         var hint: String
+        /// Choice 1 is the word shown in the text (so it gets the colour by default).
+        var firstIsCurrent: Bool = true
     }
 
     func show(_ model: Model, cursorRect: NSRect) {
         view.model = model
         let size = view.measure()
-        var origin = NSPoint(x: cursorRect.minX - 6, y: cursorRect.minY - size.height - 3)
+        var origin = NSPoint(x: cursorRect.minX - 6, y: cursorRect.minY - size.height - 4)
         let screen = NSScreen.screens.first { $0.frame.contains(cursorRect.origin) } ?? NSScreen.main
         if let vf = screen?.visibleFrame {
-            if origin.y < vf.minY { origin.y = cursorRect.maxY + 3 }
+            if origin.y < vf.minY { origin.y = cursorRect.maxY + 4 }
             origin.x = min(max(origin.x, vf.minX + 2), vf.maxX - size.width - 2)
         }
         setFrame(NSRect(origin: origin, size: size), display: true)
         view.needsDisplay = true
+        invalidateShadow()
         orderFrontRegardless()
     }
 
@@ -55,80 +59,96 @@ final class CandidateView: NSView {
 
     var model = CandidatePanel.Model(items: [], highlighted: -1, hint: "")
     var onSelect: ((Int) -> Void)?
-    private var itemRects: [NSRect] = []
-    private let padX: CGFloat = 8
-    private let padY: CGFloat = 5
-    private let gap: CGFloat = 14
+    private var chipRects: [NSRect] = []
+    private let outer: CGFloat = 5
+    private let gap: CGFloat = 5
+    private let chipPadX: CGFloat = 9
+    private let chipPadY: CGFloat = 4
 
     override var isFlipped: Bool { true }
 
+    private var theme: Theme { Theme.current }
     private var fontSize: CGFloat { max(12, Settings.shared.fontSize) }
-    private var itemFont: NSFont { .systemFont(ofSize: fontSize) }
-    private var numberFont: NSFont { .monospacedDigitSystemFont(ofSize: fontSize * 0.62, weight: .semibold) }
-    private var smallFont: NSFont { .systemFont(ofSize: max(10, fontSize * 0.55)) }
+    private var itemFont: NSFont { .systemFont(ofSize: fontSize, weight: .medium) }
+    private var numberFont: NSFont { .monospacedDigitSystemFont(ofSize: max(9, fontSize * 0.58), weight: .bold) }
+    private var smallFont: NSFont { .systemFont(ofSize: max(9, fontSize * 0.55), weight: .semibold) }
 
-    private func parts(_ item: Item) -> (num: NSAttributedString?, text: NSAttributedString, badge: NSAttributedString?, reading: NSAttributedString?) {
-        let num = item.number > 0 ? NSAttributedString(string: "\(item.number)", attributes: [.font: numberFont, .foregroundColor: NSColor.secondaryLabelColor]) : nil
-        let text = NSAttributedString(string: item.text, attributes: [.font: itemFont, .foregroundColor: NSColor.labelColor])
-        let badge = item.badge.map { NSAttributedString(string: $0, attributes: [.font: smallFont, .foregroundColor: NSColor.systemPurple]) }
-        let reading = item.reading.map { NSAttributedString(string: $0, attributes: [.font: smallFont, .foregroundColor: NSColor.secondaryLabelColor]) }
-        return (num, text, badge, reading)
+    private var active: Int {
+        if model.highlighted >= 0 { return model.highlighted }
+        return model.firstIsCurrent ? 0 : -1
     }
 
-    /// Lays the items out in one row; returns the size the bar should be.
+    private func layoutChip(_ item: Item) -> (width: CGFloat, height: CGFloat) {
+        var w = (item.text as NSString).size(withAttributes: [.font: itemFont]).width
+        if item.number > 0 { w += ("\(item.number)" as NSString).size(withAttributes: [.font: numberFont]).width + 5 }
+        if let b = item.badge { w += (b as NSString).size(withAttributes: [.font: smallFont]).width + 5 }
+        var h = ceil(itemFont.ascender - itemFont.descender)
+        if let r = item.reading {
+            w = max(w, (r as NSString).size(withAttributes: [.font: smallFont]).width)
+            h += ceil(smallFont.ascender - smallFont.descender) - 2
+        }
+        return (ceil(w) + 2 * chipPadX, h + 2 * chipPadY)
+    }
+
+    /// Lays the chips out in one row; returns the size the bar should be.
     func measure() -> NSSize {
-        itemRects.removeAll()
-        let hasReading = model.items.contains { $0.reading != nil }
-        let lineH = ceil(itemFont.ascender - itemFont.descender + itemFont.leading)
-        let rowH = lineH + (hasReading ? ceil(smallFont.ascender - smallFont.descender) : 0)
-        var x = padX
-        for item in model.items {
-            let p = parts(item)
-            var w = p.text.size().width
-            if let n = p.num { w += n.size().width + 4 }
-            if let b = p.badge { w += b.size().width + 3 }
-            if let r = p.reading { w = max(w, r.size().width + (p.num.map { $0.size().width + 4 } ?? 0)) }
-            itemRects.append(NSRect(x: x - 4, y: padY - 2, width: ceil(w) + 8, height: rowH + 4))
-            x += ceil(w) + gap
+        chipRects.removeAll()
+        let sizes = model.items.map(layoutChip)
+        let rowH = sizes.map(\.height).max() ?? 24
+        var x = outer
+        for s in sizes {
+            chipRects.append(NSRect(x: x, y: outer, width: s.width, height: rowH))
+            x += s.width + gap
         }
         if !model.hint.isEmpty {
-            x += NSAttributedString(string: model.hint, attributes: [.font: smallFont]).size().width
+            x += (model.hint as NSString).size(withAttributes: [.font: smallFont]).width + 6
         } else {
             x -= gap
         }
-        return NSSize(width: ceil(x + padX), height: ceil(rowH + 2 * padY))
+        return NSSize(width: ceil(x + outer), height: ceil(rowH + 2 * outer))
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        let bg = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 8, yRadius: 8)
-        NSColor.windowBackgroundColor.withAlphaComponent(0.98).setFill()
-        bg.fill()
-        NSColor.separatorColor.setStroke()
+        let t = theme
+        let radius = min(14, bounds.height / 2)
+        let bg = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: radius, yRadius: radius)
+        NSGradient(starting: t.backgroundTop, ending: t.backgroundBottom)?.draw(in: bg, angle: -90)
+        t.border.setStroke()
         bg.lineWidth = 1
         bg.stroke()
 
-        for (i, item) in model.items.enumerated() where i < itemRects.count {
-            let r = itemRects[i]
-            if i == model.highlighted {
-                NSColor.controlAccentColor.withAlphaComponent(0.25).setFill()
-                NSBezierPath(roundedRect: r, xRadius: 5, yRadius: 5).fill()
-            }
-            let p = parts(item)
-            var x = r.minX + 4
-            let y = r.minY + 2
-            if let n = p.num {
-                n.draw(at: NSPoint(x: x, y: y + (itemFont.capHeight - numberFont.capHeight) + 1))
-                x += n.size().width + 4
+        for (i, item) in model.items.enumerated() where i < chipRects.count {
+            let r = chipRects[i]
+            let on = i == active
+            let chip = NSBezierPath(roundedRect: r, xRadius: min(10, r.height / 2), yRadius: min(10, r.height / 2))
+            (on ? t.accent : t.chip).setFill()
+            chip.fill()
+
+            let textColor = on ? t.accentText : t.text
+            let subColor = on ? t.accentText.withAlphaComponent(0.75) : t.subtext
+            var x = r.minX + chipPadX
+            let y = r.minY + chipPadY
+            if item.number > 0 {
+                let n = NSAttributedString(string: "\(item.number)", attributes: [.font: numberFont, .foregroundColor: subColor])
+                n.draw(at: NSPoint(x: x, y: y + (itemFont.ascender - numberFont.ascender) - 0.5))
+                x += n.size().width + 5
             }
             let textX = x
-            p.text.draw(at: NSPoint(x: x, y: y))
-            x += p.text.size().width + 3
-            if let b = p.badge { b.draw(at: NSPoint(x: x, y: y + (itemFont.capHeight - smallFont.capHeight))) }
-            if let rd = p.reading { rd.draw(at: NSPoint(x: textX, y: y + p.text.size().height - 3)) }
+            let text = NSAttributedString(string: item.text, attributes: [.font: itemFont, .foregroundColor: textColor])
+            text.draw(at: NSPoint(x: x, y: y))
+            x += text.size().width + 5
+            if let badge = item.badge {
+                let b = NSAttributedString(string: badge, attributes: [.font: smallFont, .foregroundColor: subColor])
+                b.draw(at: NSPoint(x: x, y: y + (itemFont.ascender - smallFont.ascender)))
+            }
+            if let reading = item.reading {
+                let rd = NSAttributedString(string: reading, attributes: [.font: smallFont, .foregroundColor: subColor])
+                rd.draw(at: NSPoint(x: textX, y: y + ceil(itemFont.ascender - itemFont.descender) - 2))
+            }
         }
         if !model.hint.isEmpty {
-            let h = NSAttributedString(string: model.hint, attributes: [.font: smallFont, .foregroundColor: NSColor.tertiaryLabelColor])
-            h.draw(at: NSPoint(x: bounds.width - padX - h.size().width, y: (bounds.height - h.size().height) / 2))
+            let h = NSAttributedString(string: model.hint, attributes: [.font: smallFont, .foregroundColor: t.subtext])
+            h.draw(at: NSPoint(x: bounds.width - outer - 4 - h.size().width, y: (bounds.height - h.size().height) / 2))
         }
     }
 
@@ -136,6 +156,6 @@ final class CandidateView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         let p = convert(event.locationInWindow, from: nil)
-        if let i = itemRects.firstIndex(where: { $0.contains(p) }) { onSelect?(i) }
+        if let i = chipRects.firstIndex(where: { $0.contains(p) }) { onSelect?(i) }
     }
 }
