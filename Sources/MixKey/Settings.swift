@@ -17,8 +17,6 @@ final class Settings {
             "spaceBetweenScripts": true,
             "capitalizeSentences": true,
             "autoFixSpelling": true,
-            "aiEnabled": true,
-            "aiModel": "claude-haiku-5-5",
             "fontSize": 15.0,
             "showPinyin": false,
             "theme": "ocean",
@@ -46,11 +44,6 @@ final class Settings {
         get { d.bool(forKey: "autoFixSpelling") }
         set { d.set(newValue, forKey: "autoFixSpelling") }
     }
-    var aiEnabled: Bool {
-        get { d.bool(forKey: "aiEnabled") }
-        set { d.set(newValue, forKey: "aiEnabled") }
-    }
-    var aiModel: String { d.string(forKey: "aiModel") ?? "claude-haiku-5-5" }
     var fontSize: CGFloat {
         get { CGFloat(d.double(forKey: "fontSize")) }
         set { d.set(Double(newValue), forKey: "fontSize") }
@@ -62,30 +55,5 @@ final class Settings {
     var showPinyin: Bool {
         get { d.bool(forKey: "showPinyin") }
         set { d.set(newValue, forKey: "showPinyin") }
-    }
-
-    // MARK: - API key (stored in a private file readable only by this Mac user)
-
-    private var supportDir: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return base.appendingPathComponent("MixKey", isDirectory: true)
-    }
-    private var keyFile: URL { supportDir.appendingPathComponent("anthropic_api_key") }
-
-    var apiKey: String? {
-        get {
-            guard let s = try? String(contentsOf: keyFile, encoding: .utf8) else { return nil }
-            let k = s.trimmingCharacters(in: .whitespacesAndNewlines)
-            return k.isEmpty ? nil : k
-        }
-        set {
-            let fm = FileManager.default
-            if let k = newValue?.trimmingCharacters(in: .whitespacesAndNewlines), !k.isEmpty {
-                try? fm.createDirectory(at: supportDir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-                fm.createFile(atPath: keyFile.path, contents: Data(k.utf8), attributes: [.posixPermissions: 0o600])
-            } else {
-                try? fm.removeItem(at: keyFile)
-            }
-        }
     }
 }

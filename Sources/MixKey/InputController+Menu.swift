@@ -34,13 +34,9 @@ extension MixKeyInputController {
         m.addItem(item("Bigger text", #selector(menuBigger(_:))))
         m.addItem(item("Smaller text", #selector(menuSmaller(_:))))
         m.addItem(.separator())
-        let hasKey = Settings.shared.apiKey != nil
-        m.addItem(item(hasKey ? "✨ AI fixes (Claude)" : "✨ AI fixes (add API key first)", #selector(menuToggleAI(_:)),
-                       on: hasKey && Settings.shared.aiEnabled))
-        m.addItem(item(hasKey ? "Change Claude API key…" : "Add Claude API key…", #selector(menuAPIKey(_:))))
-        m.addItem(.separator())
         m.addItem(item(ScriptDetector.hasAccessibility ? "Website detection: allowed ✓" : "Allow website detection (Accessibility)…",
                        #selector(menuAccessibility(_:))))
+        m.addItem(item("My fixes… (\(Shared.shared.engine?.rules.ruleCount ?? 0) rules)", #selector(menuMyFixes(_:))))
         m.addItem(item("Forget words MixKey learned", #selector(menuForget(_:))))
         m.addItem(item("About MixKey…", #selector(menuAbout(_:))))
         return m
@@ -64,10 +60,6 @@ extension MixKeyInputController {
     @objc func menuTogglePinyin(_ sender: Any?) { Settings.shared.showPinyin.toggle() }
     @objc func menuBigger(_ sender: Any?) { Settings.shared.fontSize = min(36, Settings.shared.fontSize + 2) }
     @objc func menuSmaller(_ sender: Any?) { Settings.shared.fontSize = max(12, Settings.shared.fontSize - 2) }
-    @objc func menuToggleAI(_ sender: Any?) {
-        if Settings.shared.apiKey == nil { menuAPIKey(sender); return }
-        Settings.shared.aiEnabled.toggle()
-    }
     @objc func menuTheme(_ sender: Any?) {
         let tag = menuItem(sender)?.tag ?? 0
         if Theme.all.indices.contains(tag) { Settings.shared.themeID = Theme.all[tag].id }
@@ -78,40 +70,8 @@ extension MixKeyInputController {
         Shared.shared.engine?.keepWords = []
         UserDefaults.standard.removeObject(forKey: "keepWords")
     }
+    @objc func menuMyFixes(_ sender: Any?) { Shared.shared.openMyRules() }
     @objc func menuAccessibility(_ sender: Any?) { ScriptDetector.requestAccessibility() }
-
-    @objc func menuAPIKey(_ sender: Any?) {
-        NSApp.activate(ignoringOtherApps: true)
-        let alert = NSAlert()
-        alert.messageText = "Claude API key"
-        alert.informativeText = """
-        MixKey can use Claude to fix whole sentences (homophones, spelling, place names). \
-        Only the letters you are typing are sent — never the rest of your document. \
-        Password fields never reach input methods.
-
-        The key is saved only on this Mac (~/Library/Application Support/MixKey, readable only by you). \
-        Get a key at console.anthropic.com.
-        """
-        let field = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 340, height: 24))
-        field.placeholderString = "sk-ant-…"
-        alert.accessoryView = field
-        alert.addButton(withTitle: "Save")
-        alert.addButton(withTitle: "Cancel")
-        if Settings.shared.apiKey != nil { alert.addButton(withTitle: "Remove key") }
-        alert.window.initialFirstResponder = field
-        switch alert.runModal() {
-        case .alertFirstButtonReturn:
-            if !field.stringValue.isEmpty {
-                Settings.shared.apiKey = field.stringValue
-                Settings.shared.aiEnabled = true
-                AIAssist.shared.warmUp()
-            }
-        case .alertThirdButtonReturn:
-            Settings.shared.apiKey = nil
-        default:
-            break
-        }
-    }
 
     @objc func menuAbout(_ sender: Any?) {
         NSApp.activate(ignoringOtherApps: true)

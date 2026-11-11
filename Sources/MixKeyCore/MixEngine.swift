@@ -1,7 +1,7 @@
 import Foundation
 
 public struct Candidate: Equatable {
-    public enum Kind: Equatable { case ai, smart, word, alternative, english }
+    public enum Kind: Equatable { case smart, word, alternative, english }
     /// Text shown in the candidate window.
     public var display: String
     /// Text produced when this candidate is chosen (for words: everything before it + the word).
@@ -94,6 +94,11 @@ public final class MixEngine {
 
     private var fixCache: [String: String?] = [:]
 
+    /// Local fix rules ("Simple AI"): `dont => don't`, `could of => could have`.
+    public let rules = SimpleAI()
+    /// Call after loading new rules.
+    public func rulesChanged() { fixCache.removeAll() }
+
     /// Words you told MixKey to leave alone (by pressing Delete right after a fix).
     public var keepWords = Set<String>() { didSet { fixCache.removeAll() } }
 
@@ -108,7 +113,9 @@ public final class MixEngine {
     }
 
     private func computeFix(_ w: String) -> String? {
-        guard w == w.lowercased(), w.count >= 2, !SpellFixer.protected.contains(w), !keepWords.contains(w) else { return nil }
+        guard w == w.lowercased(), !keepWords.contains(w) else { return nil }
+        if let r = rules.word(w) { return r }
+        guard w.count >= 2, !SpellFixer.protected.contains(w) else { return nil }
         let rank = lexicon.englishRank(w)
         if rank == nil, let cap = englishCapitalizer?(w) { return cap }
         guard fixSpelling else { return nil }
@@ -302,13 +309,15 @@ public final class MixEngine {
         var i = 0
         while i < words.count {
             var matched = false
-            var n = min(lexicon.maxProperWords, words.count - i)
+            var n = min(max(lexicon.maxProperWords, rules.maxPhraseWords), words.count - i)
             while n >= 1 {
                 let phrase = words[i..<(i + n)].joined(separator: " ")
                 // only adjust words the user typed in lowercase
                 let complete = i + n < words.count || lastComplete
+                let part = Array(words[i..<(i + n)])
                 if phrase == phrase.lowercased(),
-                   let proper = lexicon.properNoun(phrase) ?? (n >= 2 && complete ? lexicon.nearProperNoun(Array(words[i..<(i + n)])) : nil) {
+                   let proper = (complete ? rules.phrase(part) : nil) ?? lexicon.properNoun(phrase)
+                    ?? (n >= 2 && complete ? lexicon.nearProperNoun(part) : nil) {
                     out.append((n, proper))
                     i += n
                     matched = true
@@ -351,12 +360,14 @@ public final class MixEngine {
 
     // MARK: - Send as you type
 
-    /// A word already sent plus the word just finished that together make a name:
-    /// "sport" + "dickson" -> "Port Dickson" (so the earlier word can be fixed in place).
-    public func nameAcross(_ previous: String, _ current: String) -> String? {
-        let p = previous.lowercased(), c = current.lowercased()
-        guard previous == p || previous.first?.isUppercase == true, current == c else { return nil }
-        return lexicon.properNoun(p + " " + c) ?? lexicon.nearProperNoun([p, c])
+    /// Words already sent plus the word just finished that together need fixing, so the earlier words can be
+    /// fixed in place: "could" "of" -> "could have" (a rule), "sport" "dickson" -> "Port Dickson" (a name).
+    public func fixAcross(_ previous: [String], _ current: String) -> String? {
+        guard !previous.isEmpty, current == current.lowercased() else { return nil }
+        let all = previous.map { $0.lowercased() } + [current]
+        if let r = rules.phrase(all) { return r }
+        guard previous.count == 1 else { return nil }
+        return lexicon.properNoun(all.joined(separator: " ")) ?? lexicon.nearProperNoun(all)
     }
 
     /// How many leading segments are settled and can go to the app now ("feels like normal typing").

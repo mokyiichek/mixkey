@@ -16,14 +16,13 @@ final class MixKeyInputController: IMKInputController {
     private var raw = ""                 // what's still open (letters + spaces)
     /// Last bit of text already sent in this run (for spacing). Empty = the run is over (cursor moved, Enter, …).
     private var lead = "" {
-        didSet { if lead.isEmpty { recent = ""; lastWord = nil } }
+        didSet { if lead.isEmpty { recent = ""; lastWords = [] } }
     }
     /// What MixKey typed into this field in the current run, so it can still be fixed afterwards.
     private var recent = ""
-    /// The last English word sent with its space, so the next word can still fix it ("sport" + "dickson").
-    private var lastWord: (typed: String, sent: String)?
-    private var aiFixWork: DispatchWorkItem?
-    private var keyCount = 0
+    /// The last English words sent (with their spaces), so the next word can still fix them:
+    /// "sport" + "dickson" -> Port Dickson, "could" + "of" -> could have.
+    private var lastWords: [(typed: String, sent: String)] = []
     private var candidates: [Candidate] = []
     private var highlighted = 0
     private var userMovedHighlight = false
@@ -35,7 +34,6 @@ final class MixKeyInputController: IMKInputController {
     private var capitalizeFirst = false
     private var lastSentChinese = false
     private var lastDetect = Date.distantPast
-    private var aiWork: DispatchWorkItem?
 
     /// The last spelling fix that was sent ("because " for "becuase"), so Delete can undo it.
     private var lastFix: (sent: String, typed: String)?
@@ -80,7 +78,7 @@ final class MixKeyInputController: IMKInputController {
         dlog("activate \(cl()?.bundleIdentifier() ?? "nil")")
         lead = ""
         detectScript()
-        AIAssist.shared.warmUp()
+        shared.reloadRulesIfChanged()
         shared.panel.onSelect = { [weak self] i in
             guard let self = self else { return }
             self.select(self.pageStart + i)
@@ -120,8 +118,6 @@ final class MixKeyInputController: IMKInputController {
         shiftAlone = false
         let fix = lastFix
         lastFix = nil
-        keyCount += 1
-        aiFixWork?.cancel()
         dlog("key \(event.keyCode) '\(event.characters ?? "")' raw='\(raw)' client=\(cl() == nil ? "nil" : "ok")")
 
         guard engine != nil, cl() != nil else { return false }
@@ -244,6 +240,7 @@ final class MixKeyInputController: IMKInputController {
         let ts = Date()
         defer { tStart += Date().timeIntervalSince(ts) * 1000 }
         if Settings.shared.scriptMode == .auto, Date().timeIntervalSince(lastDetect) > 4 { detectScript() }
+        shared.reloadRulesIfChanged()
         capitalizeFirst = false
         guard lead.isEmpty || lead == " ", Settings.shared.capitalizeSentences, let c = cl() else { return }
         if MixKeyInputController.codeApps.contains(c.bundleIdentifier() ?? "") { return }
@@ -302,23 +299,35 @@ final class MixKeyInputController: IMKInputController {
             let finished = rest.isEmpty && raw.hasSuffix(" ") && done.last!.kind == .english
             let typed = String(Array(raw)[done.last!.start..<done.last!.end])
             let single = finished && done.count == 1
-            let previous = lastWord
-            if single, let prev = previous, let name = engine.nameAcross(prev.typed, typed),
-               clearMarked(), replaceTail(prev.sent, with: name + " ") {
-                // "sport" was already sent; with "dickson" it is clearly Port Dickson: fix both
-                lastFix = (sent: name + " ", typed: prev.sent + typed)
-            } else {
-                send(s(text) + (finished ? " " : ""))
-                lastWord = nil
-                if single {
-                    lastWord = (typed: typed, sent: done[0].output + " ")
-                    // remember a spelling fix so Delete can undo it
-                    if done[0].output.lowercased() != typed.lowercased() {
-                        lastFix = (sent: done[0].output + " ", typed: typed)
+            var fixedAcross = false
+            if single {
+                // does this word fix the word(s) just before it? (try the longest first)
+                for k in stride(from: min(2, lastWords.count), through: 1, by: -1) {
+                    let prev = Array(lastWords.suffix(k))
+                    guard var fix = engine.fixAcross(prev.map(\.typed), typed) else { continue }
+                    let old = prev.map(\.sent).joined()
+                    if old.first?.isUppercase == true, let f = fix.first, f.isLowercase { fix = f.uppercased() + fix.dropFirst() }
+                    if clearMarked(), replaceTail(old, with: fix + " ") {
+                        lastFix = (sent: fix + " ", typed: old + typed)
+                        fixedAcross = true
                     }
+                    break
                 }
             }
-            if finished { scheduleAIFix() }
+            if !fixedAcross {
+                let out = s(text) + (finished ? " " : "")
+                send(out)
+                if single {
+                    lastWords.append((typed: typed, sent: out))
+                    if lastWords.count > 2 { lastWords.removeFirst() }
+                    // remember a spelling fix so Delete can undo it
+                    if done[0].output.lowercased() != typed.lowercased() {
+                        lastFix = (sent: out, typed: typed)
+                    }
+                } else {
+                    lastWords = []
+                }
+            }
             raw = rest
             capitalizeFirst = false
             if raw.isEmpty { reset(); return }
@@ -328,9 +337,6 @@ final class MixKeyInputController: IMKInputController {
         // Choices: Chinese words for the first Chinese part; otherwise the original spelling if we changed it.
         var list: [Candidate] = []
         let key = raw.trimmingCharacters(in: .whitespaces)
-        if let ai = AIAssist.shared.cached(key), AIAssist.shared.isAvailable, ai != a.preview {
-            list.append(Candidate(display: ai, output: ai, consumes: raw.count, kind: .ai))
-        }
         if a.hasChinese, let fi = a.segments.firstIndex(where: { $0.kind == .chinese }) {
             // Choice 1 is always what you see inline for the first Chinese part.
             let seg = a.segments[fi]
@@ -356,7 +362,6 @@ final class MixKeyInputController: IMKInputController {
         highlighted = 0
         userMovedHighlight = false
         render()
-        scheduleAI(a)
     }
 
     private var current: Analysis?
@@ -366,24 +371,7 @@ final class MixKeyInputController: IMKInputController {
         if userMovedHighlight, candidates.indices.contains(highlighted), candidates[highlighted].consumes >= raw.count {
             return s(candidates[highlighted].output)
         }
-        if let ai = AIAssist.shared.cached(raw.trimmingCharacters(in: .whitespaces)), AIAssist.shared.isAvailable { return s(ai) }
         return s(current?.preview ?? raw)
-    }
-
-    private func scheduleAI(_ a: Analysis) {
-        aiWork?.cancel()
-        let key = raw.trimmingCharacters(in: .whitespaces)
-        guard AIAssist.shared.isAvailable, AIAssist.shared.cached(key) == nil, a.tokens.count >= 2 else { return }
-        let guess = a.preview
-        let work = DispatchWorkItem { [weak self] in
-            guard let self = self, self.raw.trimmingCharacters(in: .whitespaces) == key else { return }
-            AIAssist.shared.convert(raw: key, localGuess: guess) { [weak self] result in
-                guard let self = self, result != nil, self.raw.trimmingCharacters(in: .whitespaces) == key else { return }
-                self.refresh(autoSend: false)
-            }
-        }
-        aiWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
     }
 
     private var pageStart: Int { (highlighted / pageSize) * pageSize }
@@ -423,7 +411,7 @@ final class MixKeyInputController: IMKInputController {
         // switches between Chinese and English (what you saw is what you get).
         if !userMovedHighlight, !raw.hasSuffix(" "), let engine = engine, let shown = current {
             let done = engine.analyze(raw + " ", options: options)
-            if done.tokens.map(\.kind) == shown.tokens.map(\.kind), AIAssist.shared.cached(raw.trimmingCharacters(in: .whitespaces)) == nil {
+            if done.tokens.map(\.kind) == shown.tokens.map(\.kind) {
                 out = s(done.preview)
                 learnSent(done.segments)
             }
@@ -477,43 +465,9 @@ final class MixKeyInputController: IMKInputController {
         cachedRect = nil
         c.insertText(new, replacementRange: range)
         recent = String(recent.dropLast(old.count)) + new
-        lastWord = nil
+        lastWords = []
         if let l = new.last { lead = String(l) }
         return true
-    }
-
-    // MARK: - AI fix
-
-    /// A moment after you stop typing, Claude checks the sentence you just typed and fixes what the
-    /// dictionary missed. Only that sentence is sent. Press Delete straight away to undo.
-    private func scheduleAIFix() {
-        aiFixWork?.cancel()
-        guard AIAssist.shared.isAvailable else { return }
-        let stamp = keyCount
-        let work = DispatchWorkItem { [weak self] in self?.runAIFix(stamp) }
-        aiFixWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.9, execute: work)
-    }
-
-    private func runAIFix(_ stamp: Int) {
-        guard stamp == keyCount, !isComposing else { return }
-        // the last sentence MixKey typed
-        let ends: Set<Character> = [".", "!", "?", "。", "！", "？", "\n"]
-        var tail = recent
-        if let i = tail.lastIndex(where: { ends.contains($0) }) { tail = String(tail[tail.index(after: i)...]) }
-        let sentence = String(tail.drop(while: { $0 == " " }))
-        let words = sentence.split(separator: " ").count
-        guard words >= 3, sentence.count <= 300, sentence.contains(where: { $0.isASCII && $0.isLetter }) else { return }
-        AIAssist.shared.fixSentence(sentence) { [weak self] fixed in
-            guard let self = self, var fixed = fixed, stamp == self.keyCount, !self.isComposing else { return }
-            let trailing = String(sentence.reversed().prefix(while: { $0 == " " }))
-            fixed = fixed.trimmingCharacters(in: .whitespaces) + trailing
-            guard fixed != sentence, abs(fixed.split(separator: " ").count - words) <= 2 else { return }
-            if self.replaceTail(sentence, with: fixed) {
-                self.lastFix = (sent: fixed, typed: sentence)
-                self.flash("✨")
-            }
-        }
     }
 
     /// Shift+Enter: send exactly what was typed.
@@ -544,7 +498,6 @@ final class MixKeyInputController: IMKInputController {
         current = nil
         highlighted = 0
         userMovedHighlight = false
-        aiWork?.cancel()
         if clearMarked {
             cl()?.setMarkedText("", selectionRange: NSRange(location: 0, length: 0),
                                 replacementRange: MixKeyInputController.notFound)
@@ -573,7 +526,7 @@ final class MixKeyInputController: IMKInputController {
         let start = pageStart
         let items: [CandidateView.Item] = candidates.dropFirst(start).prefix(pageSize).enumerated().map { i, c in
             let text = s(c.display)
-            let badge: String? = c.kind == .ai ? "✨" : (c.kind == .english ? "ABC" : nil)
+            let badge: String? = c.kind == .english ? "ABC" : nil
             return CandidateView.Item(number: i + 1, text: text,
                                       reading: Settings.shared.showPinyin ? shared.reading(text) : nil, badge: badge)
         }

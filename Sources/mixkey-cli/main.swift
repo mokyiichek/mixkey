@@ -12,6 +12,7 @@ var dbPath = "build/mixkey.db"
 if let i = args.firstIndex(of: "--db"), i + 1 < args.count { dbPath = args[i + 1]; args.removeSubrange(i...(i + 1)) }
 
 let engine = try MixEngine(lexiconPath: dbPath)
+engine.rules.load([URL(fileURLWithPath: "data/rules/fixes.txt")])
 // --learn "shi=时": pretend the user picked these (in-memory only)
 engine.lexicon.user = UserDictionary(url: nil)
 while let i = args.firstIndex(of: "--learn"), i + 1 < args.count {

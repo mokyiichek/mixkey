@@ -28,6 +28,7 @@ cp .build/release/MixKey "$APP/Contents/MacOS/MixKey"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 cp -R Resources/*.lproj "$APP/Contents/Resources/"
 cp build/mixkey.db build/icons/MixKey.tiff build/icons/MixKey.icns "$APP/Contents/Resources/"
+cp data/rules/fixes.txt "$APP/Contents/Resources/rules.txt"
 # Sign with a real certificate when there is one. Apps that are already open only keep talking to an input
 # method whose signature they recognise: an ad-hoc signature changes with every build, so after an update
 # those apps silently stop typing. A certificate (or a fixed requirement) keeps it the same across builds.

@@ -13,6 +13,7 @@ MixKey is a macOS input method that works out, word by word, whether you are typ
 | `i got reading dfiifcuilteiy` | I got reading difficulty |
 | `ok la i go makan first` | Ok la I go makan first |
 | `we go to sport dickson` | We go to Port Dickson (the word before is fixed too) |
+| `i dont think i could of gone` | I don't think I could have gone |
 | `tou fa` on a Taiwan / Hong Kong website | 頭髮 |
 
 It is built for people who find switching keyboards tiring, and for people with reading or spelling difficulty:
@@ -30,10 +31,13 @@ big, clear candidate window, pinyin with tone marks under each choice, and autom
 3. **Simplified or Traditional, automatically.** MixKey looks at Chinese already in the text field, the website
    address (`.tw`, `.hk`, `zh-Hant` …) and the window title, and switches to Traditional when it sees it — with
    phrase-aware conversion (头发 → 頭髮, 发展 → 發展).
-4. **✨ AI fixes (optional).** Add a Claude API key (混 menu › Add Claude API key…). When you pause for a moment,
-   Claude checks the sentence you just typed and fixes what the dictionary missed (wrong words, names, spelling) —
-   a small ✨ shows when it changed something, and **Delete** right after puts it back. Only that sentence (text
-   MixKey typed just now) is sent — never the rest of your document. Password fields never reach input methods.
+4. **Simple AI — local fix rules (offline, no AI service).** A plain text list of `typed => meant` rules
+   (`data/rules/fixes.txt`, ~150 to start): missing apostrophes (`dont` → don't), common misspellings, and word
+   pairs (`could of` → could have, `your welcome` → you're welcome). A word that turns the word before it into a
+   name or a rule fixes that earlier word too (`sport dickson` → Port Dickson). Add your own from the 混 menu ›
+   **My fixes…**; they work the next time you type. Rule packs dropped into
+   `~/Library/Application Support/MixKey/updates/` are loaded too — ready for online updates later.
+   Nothing you type leaves your Mac.
 
 ## Keys
 
@@ -50,8 +54,8 @@ big, clear candidate window, pinyin with tone marks under each choice, and autom
 | `, . ? ! ; :` | sends, and becomes `，。？！；：` after Chinese |
 
 Settings live in the input menu in the menu bar (the 混 icon): Simplified / Traditional / Auto, colour theme 🎨,
-spacing between Chinese and English, capitalisation, spelling fixes, pinyin hints, text size, AI assist,
-the Claude API key, and "Forget words MixKey learned".
+spacing between Chinese and English, capitalisation, spelling fixes, pinyin hints, text size, **My fixes…**,
+and "Forget words MixKey learned".
 
 ## Install (macOS 13+, Apple Silicon or Intel)
 
@@ -84,9 +88,10 @@ swift run mixkey-cli --trad "wo men qu kan dian ying"
 
 ```
 Sources/MixKeyCore/   platform-neutral engine: lexicon, pinyin lattice, English detection, casing, 简→繁
-Sources/MixKey/       macOS input method (InputMethodKit): keys, candidate window, AI, script detection
+Sources/MixKey/       macOS input method (InputMethodKit): keys, candidate window, fix rules, script detection
 Sources/mixkey-cli/   command-line tester
 tools/build_dict.py   builds build/mixkey.db (SQLite) from the downloaded data
+data/rules/fixes.txt  Simple AI fix rules (typed => meant) — edit freely
 data/lexicon/         proper nouns & place names (edit freely — Malaysian places included)
 ```
 
@@ -95,6 +100,8 @@ data/lexicon/         proper nouns & place names (edit freely — Malaysian plac
 - [x] Pinyin + English (macOS)
 - [ ] Cangjie 倉頡 + English
 - [x] Learn from what you pick (personal dictionary)
+- [x] Simple AI: local fix rules + your own fixes
+- [ ] Online updates for rule packs and dictionaries
 - [ ] Malay and other Latin-script languages
 - [ ] Windows version (Text Services Framework) sharing the same engine design
 
