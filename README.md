@@ -11,6 +11,7 @@ MixKey is a macOS input method that works out, word by word, whether you are typ
 | `jin tian de meeting hen boring` | 今天的 meeting 很 boring |
 | `kuala lumpur hen re` | Kuala Lumpur 很热 |
 | `i got reading dfiifcuilteiy` | I got reading difficulty |
+| `ok la i go makan first` | Ok la I go makan first |
 | `tou fa` on a Taiwan / Hong Kong website | 頭髮 |
 
 It is built for people who find switching keyboards tiring, and for people with reading or spelling difficulty:
@@ -36,7 +37,8 @@ big, clear candidate window, pinyin with tone marks under each choice, and autom
 
 | Key | Action |
 | --- | --- |
-| letters, space | keep typing (space separates words) |
+| letters, space | keep typing — English words go out (spelling fixed) as soon as you press space |
+| **Delete** right after a fix | put back what you typed (and never fix that word again) |
 | **Enter** or **Space twice** | send what is shown |
 | **1–9** / click | pick a choice (picking a word keeps the rest of the sentence) |
 | ↑ ↓ Tab | move through choices, ← → page |
@@ -66,6 +68,9 @@ log out and back in, or add it in *System Settings › Keyboard › Input Source
 For automatic Traditional detection on websites, choose **Allow website detection** in the MixKey menu and turn
 MixKey on in *System Settings › Privacy & Security › Accessibility*.
 
+**After an update**, an app that was already open may not type with MixKey until you quit and reopen it
+(or restart the Mac once). Builds are signed with your Apple certificate when you have one, which keeps this rare.
+
 Other scripts: `scripts/test.sh` (engine tests), `scripts/uninstall.sh`, and try the engine without installing:
 
 ```bash
@@ -87,7 +92,7 @@ data/lexicon/         proper nouns & place names (edit freely — Malaysian plac
 
 - [x] Pinyin + English (macOS)
 - [ ] Cangjie 倉頡 + English
-- [ ] Learn from what you pick (personal dictionary)
+- [x] Learn from what you pick (personal dictionary)
 - [ ] Malay and other Latin-script languages
 - [ ] Windows version (Text Services Framework) sharing the same engine design
 

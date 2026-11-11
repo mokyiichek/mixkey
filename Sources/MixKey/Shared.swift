@@ -25,6 +25,14 @@ final class Shared {
         engine?.lexicon.user = UserDictionary(url: support.appendingPathComponent("learned.json"))
         engine?.englishCapitalizer = Shared.capitalize
         engine?.englishGuesses = Shared.guesses
+        engine?.keepWords = Set(UserDefaults.standard.stringArray(forKey: "keepWords") ?? [])
+    }
+
+    /// Never "fix" this word again (you pressed Delete right after it was changed).
+    func keep(_ word: String) {
+        guard let engine = engine, !engine.keepWords.contains(word) else { return }
+        engine.keepWords.insert(word)
+        UserDefaults.standard.set(Array(engine.keepWords).sorted(), forKey: "keepWords")
     }
 
     /// macOS spell checker helpers used by the engine's fixer.

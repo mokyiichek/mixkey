@@ -28,30 +28,39 @@ if let i = args.firstIndex(of: "--spell") {
     }
     exit(0)
 }
-// --type: simulate typing key by key with the input method's send-as-you-type rule
+// --type: simulate typing key by key with the input method's send-as-you-type rule.
+// Prints what is in the app after each space:  sent text | still open
 if let i = args.firstIndex(of: "--type") {
     args.remove(at: i)
     for sentence in args {
         var raw = "", sent = "", lead = ""
         var opts = EngineOptions(); opts.capitalizeFirst = true
+        var steps: [String] = []
         func send(_ t: String) {
             let x = lead.isEmpty ? t : String(engine.join(lead, t, options: opts).dropFirst(lead.count))
             sent += x; lead = String(x.suffix(1))
         }
-        for ch in sentence + "\n" {
-            if ch == "\n" { send(engine.analyze(raw, options: opts).preview); raw = ""; break }
+        for ch in sentence {
             raw.append(ch)
             let a = engine.analyze(raw, options: opts)
-            if a.segments.count > 2, let last = a.segments.dropLast(2).last, last.end < raw.count {
+            let n = engine.settledCount(a)
+            if n > 0, a.segments[n - 1].end < raw.count || raw.hasSuffix(" ") {
+                let done = a.segments.prefix(n)
                 var text = ""
-                for seg in a.segments.dropLast(2) { text = engine.join(text, seg.output, options: opts) }
+                for seg in done { text = engine.join(text, seg.output, options: opts) }
                 if opts.capitalizeFirst, let f = text.first, f.isLowercase { text = f.uppercased() + text.dropFirst() }
+                let rest = String(String(raw.dropFirst(done.last!.end)).drop(while: { $0 == " " }))
+                if rest.isEmpty, raw.hasSuffix(" "), done.last!.kind == .english { text += " " }
+                if ProcessInfo.processInfo.environment["MKDEBUG"] != nil { print("   send [\(text)] raw=[\(raw)] n=\(n) segs=\(a.segments.map(\.output))") }
                 send(text)
-                raw = String(raw.dropFirst(last.end)).trimmingCharacters(in: .whitespaces)
+                raw = rest
                 opts.capitalizeFirst = false
             }
+            if ch == " " { steps.append(sent + " | " + engine.analyze(raw, options: opts).preview) }
         }
+        if !raw.isEmpty { send(engine.analyze(raw + " ", options: opts).preview) }
         print("\(sentence)\n   => \(sent)")
+        for st in steps { print("      \(st)") }
     }
     exit(0)
 }

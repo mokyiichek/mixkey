@@ -28,6 +28,9 @@ final class MixKeyInputController: IMKInputController {
     private var lastDetect = Date.distantPast
     private var aiWork: DispatchWorkItem?
 
+    /// The last spelling fix that was sent ("because " for "becuase"), so Delete can undo it.
+    private var lastFix: (sent: String, typed: String)?
+
     private var shiftAlone = false
     private var shiftDownAt = Date.distantPast
 
@@ -106,6 +109,8 @@ final class MixKeyInputController: IMKInputController {
         }
         guard event.type == .keyDown else { return false }
         shiftAlone = false
+        let fix = lastFix
+        lastFix = nil
         dlog("key \(event.keyCode) '\(event.characters ?? "")' raw='\(raw)' client=\(cl() == nil ? "nil" : "ok")")
 
         guard engine != nil, cl() != nil else { return false }
@@ -130,7 +135,11 @@ final class MixKeyInputController: IMKInputController {
             reset()
             return true
         case 51: // Delete
-            guard isComposing else { lead = ""; return false }
+            guard isComposing else {
+                if undoFix(fix) { return true }
+                lead = ""
+                return false
+            }
             raw.removeLast()
             if raw.isEmpty { reset() } else { refresh(autoSend: false) }
             return true
@@ -265,32 +274,27 @@ final class MixKeyInputController: IMKInputController {
         // Send settled words. Keep open: the word being typed, plus the word before it when it can
         // still change (Chinese, or the start of a name like "port" -> Port Dickson).
         // English words go out the moment you press space.
-        if autoSend, a.segments.count >= 2 || (a.segments.count == 1 && raw.hasSuffix(" ")) {
-            let segs = a.segments
-            let typing = raw.hasSuffix(" ") ? nil : segs.last
-            var openFrom = typing == nil ? segs.count : segs.count - 1
-            if openFrom > 0 {
-                let prev = segs[openFrom - 1]
-                let prevText = String(Array(raw)[prev.start..<prev.end]).lowercased()
-                let mayChange = prev.kind == .chinese || typing?.kind == .chinese
-                    || engine.lexicon.startsProperNoun(prevText)
-                    || a.tokens.contains { $0.ambiguous && $0.start >= prev.start }
-                if mayChange { openFrom -= 1 }
+        let n = autoSend ? engine.settledCount(a) : 0
+        if n > 0, a.segments[n - 1].end < raw.count || raw.hasSuffix(" ") {
+            let done = Array(a.segments.prefix(n))
+            var text = ""
+            for seg in done { text = engine.join(text, seg.output, options: options) }
+            learnSent(done)
+            if capitalizeFirst, let f = text.first, f.isLowercase, f.isASCII { text = f.uppercased() + text.dropFirst() }
+            // keep the space you typed after the next word (only leading spaces go)
+            let rest = String(String(raw.dropFirst(done.last!.end)).drop(while: { $0 == " " }))
+            // an English word you finished with space: the space shows straight away, like normal typing
+            let finished = rest.isEmpty && raw.hasSuffix(" ") && done.last!.kind == .english
+            let typed = String(Array(raw)[done.last!.start..<done.last!.end])
+            send(s(text) + (finished ? " " : ""))
+            // remember a spelling fix so Delete can undo it
+            if finished, done.count == 1, done[0].output.lowercased() != typed.lowercased() {
+                lastFix = (sent: done[0].output + " ", typed: typed)
             }
-            // Chinese: keep at most two pieces open so homophones can still be fixed by context
-            if let t = typing, t.kind == .chinese { openFrom = max(openFrom, segs.count - 2) }
-            let done = segs.prefix(max(0, openFrom))
-            if let last = done.last, last.end < raw.count {
-                var text = ""
-                for seg in done { text = engine.join(text, seg.output, options: options) }
-                learnSent(Array(done))
-                if capitalizeFirst, let f = text.first, f.isLowercase, f.isASCII { text = f.uppercased() + text.dropFirst() }
-                send(s(text))
-                raw = String(raw.dropFirst(last.end)).trimmingCharacters(in: CharacterSet(charactersIn: " "))
-                capitalizeFirst = false
-                if raw.isEmpty { reset(); return }
-                a = engine.analyze(raw, options: options)
-            }
+            raw = rest
+            capitalizeFirst = false
+            if raw.isEmpty { reset(); return }
+            a = engine.analyze(raw, options: options)
         }
 
         // Choices: Chinese words for the first Chinese part; otherwise the original spelling if we changed it.
@@ -409,6 +413,21 @@ final class MixKeyInputController: IMKInputController {
             guard let r = seg.reading, (2...6).contains(r.split(separator: " ").count) else { continue }
             engine.learn(reading: r, word: seg.output, picked: false)
         }
+    }
+
+    /// Delete straight after a word was fixed: put back what you typed, and don't fix that word again.
+    private func undoFix(_ fix: (sent: String, typed: String)?) -> Bool {
+        guard let fix = fix, let c = cl() else { return false }
+        let sel = c.selectedRange()
+        let len = (fix.sent as NSString).length
+        guard sel.location != NSNotFound, sel.length == 0, sel.location >= len else { return false }
+        let range = NSRange(location: sel.location - len, length: len)
+        var actual = NSRange(location: NSNotFound, length: 0)
+        guard c.string(from: range, actualRange: &actual) == fix.sent else { return false }
+        c.insertText(fix.typed, replacementRange: range)
+        lead = ""
+        shared.keep(fix.typed.lowercased())
+        return true
     }
 
     /// Shift+Enter: send exactly what was typed.

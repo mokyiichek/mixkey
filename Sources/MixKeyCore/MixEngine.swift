@@ -94,6 +94,9 @@ public final class MixEngine {
 
     private var fixCache: [String: String?] = [:]
 
+    /// Words you told MixKey to leave alone (by pressing Delete right after a fix).
+    public var keepWords = Set<String>() { didSet { fixCache.removeAll() } }
+
     /// Spelling fix for one complete lowercase English word, or nil to keep it (cached).
     public func fixWord(_ w: String) -> String? {
         let key = "\(fixSpelling ? 1 : 0)|\(w)"
@@ -105,7 +108,7 @@ public final class MixEngine {
     }
 
     private func computeFix(_ w: String) -> String? {
-        guard w == w.lowercased(), w.count >= 2, !SpellFixer.protected.contains(w) else { return nil }
+        guard w == w.lowercased(), w.count >= 2, !SpellFixer.protected.contains(w), !keepWords.contains(w) else { return nil }
         let rank = lexicon.englishRank(w)
         if rank == nil, let cap = englishCapitalizer?(w) { return cap }
         guard fixSpelling else { return nil }
@@ -157,6 +160,10 @@ public final class MixEngine {
     /// Pinyin syllables that show up in English word lists only as noise ("ma", "de", "re").
     static let pinyinParticles: Set<String> = ["ma", "de", "re", "le", "na", "ta", "ne", "ba", "la", "ya", "ha", "wa", "da", "ge", "ni", "wo", "ai", "zai", "shi", "bu"]
 
+    /// Malaysian words that also look like pinyin ("ok la", "go makan"): the words around them decide.
+    static let localWords: Set<String> = ["la", "lah", "lor", "leh", "meh", "ah", "wah", "makan", "tapau", "jom", "kan",
+                                          "ya", "tak", "nak", "dah", "pun", "je", "eh", "oi", "kopi", "teh", "roti", "mamak"]
+
     /// How "English" a token looks, from word frequency (0 = not English).
     func englishScore(_ word: String) -> Double {
         let w = word.lowercased()
@@ -193,7 +200,7 @@ public final class MixEngine {
             guard pinyin.isPinyin(t.text, allowPartialEnd: isLast),
                   let r = pinyin.convert(t.text, allowPartialEnd: isLast) else { continue }
             reading[i] = r.reading
-            let e = englishScore(t.text)
+            let e = MixEngine.localWords.contains(t.text.lowercased()) ? 1.0 : englishScore(t.text)
             if e == 0 { lean[i] = .chinese; continue }
             lean[i] = .ambiguous
             eScore[i] = e
@@ -338,6 +345,26 @@ public final class MixEngine {
     }
 
     static func isCJKPunct(_ c: Character) -> Bool { "，。？！；：、（）《》「」『』…—“”‘’".contains(c) }
+
+    // MARK: - Send as you type
+
+    /// How many leading segments are settled and can go to the app now ("feels like normal typing").
+    /// Kept open: the word being typed, plus the piece before it only when the next word can still change it —
+    /// Chinese (ming → 明天 when tian follows), a word that could be pinyin or English (he, can), or the start
+    /// of a name (port → Port Dickson). A plain English word goes out the moment you press space.
+    public func settledCount(_ a: Analysis) -> Int {
+        let segs = a.segments
+        guard !segs.isEmpty else { return 0 }
+        let typing = !a.raw.hasSuffix(" ")
+        var open = typing ? segs.count - 1 : segs.count
+        if open > 0 {
+            let prev = segs[open - 1]
+            let prevText = String(Array(a.raw)[prev.start..<prev.end]).lowercased()
+            let unsure = a.tokens.contains { $0.ambiguous && $0.start >= prev.start && $0.end <= prev.end }
+            if prev.kind == .chinese || unsure || lexicon.startsProperNoun(prevText) { open -= 1 }
+        }
+        return max(0, open)
+    }
 
     // MARK: - Analysis
 

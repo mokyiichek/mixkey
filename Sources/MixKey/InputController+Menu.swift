@@ -75,6 +75,8 @@ extension MixKeyInputController {
     @objc func menuForget(_ sender: Any?) {
         Shared.shared.engine?.lexicon.user?.clear()
         Shared.shared.engine?.lexicon.userChanged()
+        Shared.shared.engine?.keepWords = []
+        UserDefaults.standard.removeObject(forKey: "keepWords")
     }
     @objc func menuAccessibility(_ sender: Any?) { ScriptDetector.requestAccessibility() }
 

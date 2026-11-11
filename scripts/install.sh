@@ -13,5 +13,4 @@ echo
 echo "Installed. Pick 混 MixKey from the input menu in the menu bar (or press Ctrl+Space / Fn to cycle)."
 echo "If it doesn't appear: System Settings › Keyboard › Input Sources › Edit… › + › Chinese, Simplified › MixKey."
 echo
-echo "After an UPDATE: apps that were already open may not reach the new MixKey (you can't type there)."
-echo "Switch to another app and back; if that app still can't type, quit and reopen it."
+echo "If an app that was already open can't type with MixKey, quit and reopen that app (or restart the Mac once)."
