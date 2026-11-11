@@ -19,7 +19,7 @@ public final class SpellFixer {
         "makan", "tapau", "boleh", "jom", "sudah", "lagi", "kan", "ya", "yah", "tak", "nak", "dah", "pun", "je",
         "ok", "okay", "okie", "lol", "omg", "btw", "idk", "pls", "plz", "thx", "tq", "ty", "ur", "u", "k", "hehe",
         "haha", "hahaha", "hmm", "hmmm", "eh", "oi", "bro", "sis", "kopi", "teh", "roti", "mamak", "kampung",
-        "mok", "uni", "uniness",
+        "mok", "uni", "uniness", "boh", "ong", "liao", "sia", "gua", "lu", "wan",
     ]
 
     public init(lexicon: Lexicon, maxRank: Int = 40000) {

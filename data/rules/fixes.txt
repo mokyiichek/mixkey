@@ -38,6 +38,14 @@ whos => who's
 lets go => let's go
 
 # Very common misspellings
+bak => back
+wat => what
+wen => when
+thn => then
+abit => a bit
+infront => in front
+everytime => every time
+eachother => each other
 teh => the
 adn => and
 waht => what

@@ -25,6 +25,7 @@ final class Shared {
         engine?.lexicon.user = UserDictionary(url: support.appendingPathComponent("learned.json"))
         engine?.englishCapitalizer = Shared.capitalize
         engine?.englishGuesses = Shared.guesses
+        Shared.lexicon = engine?.lexicon
         engine?.keepWords = Set(UserDefaults.standard.stringArray(forKey: "keepWords") ?? [])
         self.support = support
         reloadRulesIfChanged()
@@ -104,12 +105,36 @@ final class Shared {
 
     /// The system's autocorrection + guesses; nil = leave the word alone (valid English or Malay).
     static func guesses(_ word: String) -> (correction: String?, guesses: [String])? {
-        if valid(word, "en") { return nil }
-        if checker.availableLanguages.contains("ms"), valid(word, "ms") { return nil }
         let range = NSRange(location: 0, length: (word as NSString).length)
+        if valid(word, "en") || (checker.availableLanguages.contains("ms") && valid(word, "ms")) {
+            // A real but rare word that is a very common word with one letter missed ("bak" -> back,
+            // "wat" -> what) is almost always a slip. Malay words are kept: they don't fit this pattern.
+            guard let near = missedLetter(word, range) else { return nil }
+            return (near, [near])
+        }
         let corr = checker.correction(forWordRange: range, in: word, language: "en", inSpellDocumentWithTag: 0)
         let g = checker.guesses(forWordRange: range, in: word, language: "en", inSpellDocumentWithTag: 0) ?? []
         return (corr, Array(g.prefix(6)))
+    }
+
+    /// The engine's word list, for how common a word is.
+    static weak var lexicon: Lexicon?
+
+    /// "bak" -> "back": the macOS dictionary knows the word, but it's rare (in our list or not at all) and
+    /// adding one letter gives one of the ~300 most common English words. Short Malay words don't fit this
+    /// (checked: ada, apa, dia, itu, kat, nak, saya…), and Manglish words are protected in SpellFixer.
+    static func missedLetter(_ word: String, _ range: NSRange) -> String? {
+        guard (3...5).contains(word.count), word.allSatisfy({ $0.isASCII && $0.isLowercase }), let lex = lexicon,
+              (lex.englishRank(word) ?? .max) > 20000 else { return nil }
+        var best: (rank: Int, word: String)?
+        let chars = Array(word)
+        for i in 0...chars.count {
+            for ch in "abcdefghijklmnopqrstuvwxyz" {
+                let cand = String(chars[..<i]) + String(ch) + String(chars[i...])
+                if let r = lex.englishRank(cand), r <= 300, r < (best?.rank ?? .max) { best = (r, cand) }
+            }
+        }
+        return best?.word
     }
 
     /// Pinyin with tone marks for Chinese text, e.g. 明天 -> míng tiān.

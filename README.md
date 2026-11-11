@@ -32,7 +32,8 @@ big, clear candidate window, pinyin with tone marks under each choice, and autom
    address (`.tw`, `.hk`, `zh-Hant` …) and the window title, and switches to Traditional when it sees it — with
    phrase-aware conversion (头发 → 頭髮, 发展 → 發展).
 4. **Simple AI — local fix rules (offline, no AI service).** A plain text list of `typed => meant` rules
-   (`data/rules/fixes.txt`, ~150 to start): missing apostrophes (`dont` → don't), common misspellings, and word
+   (`data/rules/fixes.txt`, ~150 to start): missing apostrophes (`dont` → don't), common misspellings, a real-but-rare word that is a very common word missing one
+   letter (`bak` → back, `wat` → what), and word
    pairs (`could of` → could have, `your welcome` → you're welcome). A word that turns the word before it into a
    name or a rule fixes that earlier word too (`sport dickson` → Port Dickson). Add your own from the 混 menu ›
    **My fixes…**; they work the next time you type. Rule packs dropped into
