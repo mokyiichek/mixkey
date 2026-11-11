@@ -35,7 +35,7 @@ extension MixKeyInputController {
         m.addItem(item("Smaller text", #selector(menuSmaller(_:))))
         m.addItem(.separator())
         let hasKey = Settings.shared.apiKey != nil
-        m.addItem(item(hasKey ? "✨ AI assist (Claude)" : "✨ AI assist (add API key first)", #selector(menuToggleAI(_:)),
+        m.addItem(item(hasKey ? "✨ AI fixes (Claude)" : "✨ AI fixes (add API key first)", #selector(menuToggleAI(_:)),
                        on: hasKey && Settings.shared.aiEnabled))
         m.addItem(item(hasKey ? "Change Claude API key…" : "Add Claude API key…", #selector(menuAPIKey(_:))))
         m.addItem(.separator())

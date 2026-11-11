@@ -14,7 +14,16 @@ import MixKeyCore
 @objc(MixKeyInputController)
 final class MixKeyInputController: IMKInputController {
     private var raw = ""                 // what's still open (letters + spaces)
-    private var lead = ""                // last bit of text already sent in this run (for spacing)
+    /// Last bit of text already sent in this run (for spacing). Empty = the run is over (cursor moved, Enter, …).
+    private var lead = "" {
+        didSet { if lead.isEmpty { recent = ""; lastWord = nil } }
+    }
+    /// What MixKey typed into this field in the current run, so it can still be fixed afterwards.
+    private var recent = ""
+    /// The last English word sent with its space, so the next word can still fix it ("sport" + "dickson").
+    private var lastWord: (typed: String, sent: String)?
+    private var aiFixWork: DispatchWorkItem?
+    private var keyCount = 0
     private var candidates: [Candidate] = []
     private var highlighted = 0
     private var userMovedHighlight = false
@@ -111,6 +120,8 @@ final class MixKeyInputController: IMKInputController {
         shiftAlone = false
         let fix = lastFix
         lastFix = nil
+        keyCount += 1
+        aiFixWork?.cancel()
         dlog("key \(event.keyCode) '\(event.characters ?? "")' raw='\(raw)' client=\(cl() == nil ? "nil" : "ok")")
 
         guard engine != nil, cl() != nil else { return false }
@@ -144,7 +155,11 @@ final class MixKeyInputController: IMKInputController {
             if raw.isEmpty { reset() } else { refresh(autoSend: false) }
             return true
         case 49: // Space
-            guard isComposing else { lead = " "; return false }
+            guard isComposing else {
+                if !lead.isEmpty { recent += " " }
+                lead = " "
+                return false
+            }
             if raw.hasSuffix(" ") {
                 sendAll(trailingSpace: true) // double space: send + a real space
             } else {
@@ -286,11 +301,24 @@ final class MixKeyInputController: IMKInputController {
             // an English word you finished with space: the space shows straight away, like normal typing
             let finished = rest.isEmpty && raw.hasSuffix(" ") && done.last!.kind == .english
             let typed = String(Array(raw)[done.last!.start..<done.last!.end])
-            send(s(text) + (finished ? " " : ""))
-            // remember a spelling fix so Delete can undo it
-            if finished, done.count == 1, done[0].output.lowercased() != typed.lowercased() {
-                lastFix = (sent: done[0].output + " ", typed: typed)
+            let single = finished && done.count == 1
+            let previous = lastWord
+            if single, let prev = previous, let name = engine.nameAcross(prev.typed, typed),
+               clearMarked(), replaceTail(prev.sent, with: name + " ") {
+                // "sport" was already sent; with "dickson" it is clearly Port Dickson: fix both
+                lastFix = (sent: name + " ", typed: prev.sent + typed)
+            } else {
+                send(s(text) + (finished ? " " : ""))
+                lastWord = nil
+                if single {
+                    lastWord = (typed: typed, sent: done[0].output + " ")
+                    // remember a spelling fix so Delete can undo it
+                    if done[0].output.lowercased() != typed.lowercased() {
+                        lastFix = (sent: done[0].output + " ", typed: typed)
+                    }
+                }
             }
+            if finished { scheduleAIFix() }
             raw = rest
             capitalizeFirst = false
             if raw.isEmpty { reset(); return }
@@ -426,8 +454,66 @@ final class MixKeyInputController: IMKInputController {
         guard c.string(from: range, actualRange: &actual) == fix.sent else { return false }
         c.insertText(fix.typed, replacementRange: range)
         lead = ""
-        shared.keep(fix.typed.lowercased())
+        if !fix.typed.contains(" ") { shared.keep(fix.typed.lowercased()) }
         return true
+    }
+
+    /// Removes the underlined text being typed (so the text before the cursor is what was sent).
+    private func clearMarked() -> Bool {
+        cl()?.setMarkedText("", selectionRange: NSRange(location: 0, length: 0), replacementRange: MixKeyInputController.notFound)
+        return true
+    }
+
+    /// Replaces text MixKey just typed (right before the cursor) — only if it is really still there.
+    @discardableResult
+    private func replaceTail(_ old: String, with new: String) -> Bool {
+        guard let c = cl(), recent.hasSuffix(old) else { return false }
+        let sel = c.selectedRange()
+        let len = (old as NSString).length
+        guard sel.location != NSNotFound, sel.length == 0, sel.location >= len else { return false }
+        let range = NSRange(location: sel.location - len, length: len)
+        var actual = NSRange(location: NSNotFound, length: 0)
+        guard c.string(from: range, actualRange: &actual) == old else { return false }
+        cachedRect = nil
+        c.insertText(new, replacementRange: range)
+        recent = String(recent.dropLast(old.count)) + new
+        lastWord = nil
+        if let l = new.last { lead = String(l) }
+        return true
+    }
+
+    // MARK: - AI fix
+
+    /// A moment after you stop typing, Claude checks the sentence you just typed and fixes what the
+    /// dictionary missed. Only that sentence is sent. Press Delete straight away to undo.
+    private func scheduleAIFix() {
+        aiFixWork?.cancel()
+        guard AIAssist.shared.isAvailable else { return }
+        let stamp = keyCount
+        let work = DispatchWorkItem { [weak self] in self?.runAIFix(stamp) }
+        aiFixWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.9, execute: work)
+    }
+
+    private func runAIFix(_ stamp: Int) {
+        guard stamp == keyCount, !isComposing else { return }
+        // the last sentence MixKey typed
+        let ends: Set<Character> = [".", "!", "?", "。", "！", "？", "\n"]
+        var tail = recent
+        if let i = tail.lastIndex(where: { ends.contains($0) }) { tail = String(tail[tail.index(after: i)...]) }
+        let sentence = String(tail.drop(while: { $0 == " " }))
+        let words = sentence.split(separator: " ").count
+        guard words >= 3, sentence.count <= 300, sentence.contains(where: { $0.isASCII && $0.isLetter }) else { return }
+        AIAssist.shared.fixSentence(sentence) { [weak self] fixed in
+            guard let self = self, var fixed = fixed, stamp == self.keyCount, !self.isComposing else { return }
+            let trailing = String(sentence.reversed().prefix(while: { $0 == " " }))
+            fixed = fixed.trimmingCharacters(in: .whitespaces) + trailing
+            guard fixed != sentence, abs(fixed.split(separator: " ").count - words) <= 2 else { return }
+            if self.replaceTail(sentence, with: fixed) {
+                self.lastFix = (sent: fixed, typed: sentence)
+                self.flash("✨")
+            }
+        }
     }
 
     /// Shift+Enter: send exactly what was typed.
@@ -446,6 +532,8 @@ final class MixKeyInputController: IMKInputController {
 
     private func insert(_ text: String) {
         cachedRect = nil
+        recent += text
+        if recent.count > 400 { recent = String(recent.suffix(300)) }
         cl()?.insertText(text, replacementRange: MixKeyInputController.notFound)
     }
 

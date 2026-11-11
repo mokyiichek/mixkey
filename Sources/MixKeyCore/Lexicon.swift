@@ -158,6 +158,32 @@ public final class Lexicon {
         return sqlite3_step(st) == SQLITE_ROW
     }
 
+    /// Multi-word names, loaded once, for near-miss matching.
+    private lazy var multiWordNames: [(words: [String], proper: String)] = Lexicon.queryPairs(db,
+        "SELECT lower, proper FROM proper WHERE words >= 2").map { (words: $0.0.split(separator: " ").map(String.init), proper: $0.1) }
+
+    /// A multi-word name typed with one small slip ("sport dickson" -> Port Dickson, "kuala lumpor" -> Kuala Lumpur).
+    /// All words but one must match exactly; the other must be close (one wrong, extra or missing letter).
+    public func nearProperNoun(_ words: [String]) -> String? {
+        guard words.count >= 2 else { return nil }
+        let lower = words.map { $0.lowercased() }
+        var best: (cost: Double, proper: String)?
+        for name in multiWordNames where name.words.count == lower.count {
+            var cost = 0.0
+            var misses = 0
+            for (a, b) in zip(lower, name.words) where a != b {
+                misses += 1
+                guard misses == 1, a.count >= 3, b.count >= 4 else { cost = .infinity; break }
+                cost = SpellFixer.distance(Array(a.utf8), Array(b.utf8), limit: 1.0)
+            }
+            // the words that did match must be name-like, not everyday words ("new work" is not New York)
+            let anchors = zip(lower, name.words).filter { $0.0 == $0.1 }.map(\.0)
+            let distinctive = anchors.contains { (englishRank($0) ?? .max) > 2500 }
+            if misses == 1, cost <= 1.0, distinctive, cost < (best?.cost ?? .infinity) { best = (cost, name.proper) }
+        }
+        return best?.proper
+    }
+
     public func stPhrase(_ s: String) -> String? {
         guard let st = stmtPhrase else { return nil }
         sqlite3_reset(st)

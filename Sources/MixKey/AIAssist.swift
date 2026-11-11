@@ -39,6 +39,66 @@ final class AIAssist {
 
     func cached(_ raw: String) -> String? { cache[raw] }
 
+    private static let fixSystem = """
+    You are the autocorrect inside a keyboard used in Malaysia by someone with reading difficulty who types fast. \
+    You get one sentence they just typed (English, maybe mixed with Chinese or Malay). Fix only clear mistakes: \
+    misspelled or wrong words (e.g. "sport Dickson" -> "Port Dickson", "there" vs "their"), capitalisation of \
+    names and "I". Keep everything else exactly: same words, order, language, slang (la, lah, makan), \
+    punctuation and Chinese characters. Never translate, rephrase, or add words. \
+    If nothing needs fixing, return the sentence unchanged. Reply with only the sentence.
+    """
+    private var fixCache: [String: String] = [:]
+    private var fixTask: URLSessionDataTask?
+
+    /// Sentence-level autocorrect. Calls back on the main queue with the fixed sentence, or nil.
+    func fixSentence(_ sentence: String, completion: @escaping (String?) -> Void) {
+        let key = sentence.trimmingCharacters(in: .whitespaces)
+        if let hit = fixCache[key] { completion(hit); return }
+        guard isAvailable, let apiKey = Settings.shared.apiKey,
+              let url = URL(string: "https://api.anthropic.com/v1/messages") else { completion(nil); return }
+        fixTask?.cancel()
+        let body: [String: Any] = [
+            "model": Settings.shared.aiModel,
+            "max_tokens": 400,
+            "thinking": ["type": "disabled"],
+            "output_config": ["effort": "low"],
+            "system": AIAssist.fixSystem,
+            "messages": [["role": "user", "content": key]],
+        ]
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "content-type")
+        req.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        req.setValue("2026-10-21", forHTTPHeaderField: "anthropic-version")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        let task = session.dataTask(with: req) { [weak self] data, _, error in
+            var result: String?
+            if let data = data, let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                if (json["stop_reason"] as? String) == "refusal" {
+                    result = nil
+                } else if let content = json["content"] as? [[String: Any]] {
+                    let text = content.filter { ($0["type"] as? String) == "text" }
+                        .compactMap { $0["text"] as? String }.joined()
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    result = AIAssist.sanitize(text, raw: key)
+                } else if let err = json["error"] as? [String: Any] {
+                    self?.lastError = err["message"] as? String
+                }
+            } else if let error = error as NSError?, error.code != NSURLErrorCancelled {
+                self?.lastError = error.localizedDescription
+            }
+            DispatchQueue.main.async {
+                if let r = result {
+                    if (self?.fixCache.count ?? 0) > 200 { self?.fixCache.removeAll() }
+                    self?.fixCache[key] = r
+                }
+                completion(result)
+            }
+        }
+        fixTask = task
+        task.resume()
+    }
+
     func warmUp() {
         // Opens the TLS connection early so the first real request is faster.
         guard isAvailable, let url = URL(string: "https://api.anthropic.com/") else { return }

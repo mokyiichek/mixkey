@@ -220,8 +220,9 @@ public final class MixEngine {
             var len = min(lexicon.maxProperWords, n - i)
             var hit = false
             while len >= 2 {
-                let phrase = tokens[i..<(i + len)].map { $0.text.lowercased() }.joined(separator: " ")
-                if lexicon.properNoun(phrase) != nil {
+                let parts = tokens[i..<(i + len)].map { $0.text.lowercased() }
+                let complete = i + len < n || rawEndsWithSpace
+                if lexicon.properNoun(parts.joined(separator: " ")) != nil || (complete && lexicon.nearProperNoun(parts) != nil) {
                     for j in i..<(i + len) { lean[j] = .english }
                     i += len
                     hit = true
@@ -305,7 +306,9 @@ public final class MixEngine {
             while n >= 1 {
                 let phrase = words[i..<(i + n)].joined(separator: " ")
                 // only adjust words the user typed in lowercase
-                if phrase == phrase.lowercased(), let proper = lexicon.properNoun(phrase) {
+                let complete = i + n < words.count || lastComplete
+                if phrase == phrase.lowercased(),
+                   let proper = lexicon.properNoun(phrase) ?? (n >= 2 && complete ? lexicon.nearProperNoun(Array(words[i..<(i + n)])) : nil) {
                     out.append((n, proper))
                     i += n
                     matched = true
@@ -347,6 +350,14 @@ public final class MixEngine {
     static func isCJKPunct(_ c: Character) -> Bool { "，。？！；：、（）《》「」『』…—“”‘’".contains(c) }
 
     // MARK: - Send as you type
+
+    /// A word already sent plus the word just finished that together make a name:
+    /// "sport" + "dickson" -> "Port Dickson" (so the earlier word can be fixed in place).
+    public func nameAcross(_ previous: String, _ current: String) -> String? {
+        let p = previous.lowercased(), c = current.lowercased()
+        guard previous == p || previous.first?.isUppercase == true, current == c else { return nil }
+        return lexicon.properNoun(p + " " + c) ?? lexicon.nearProperNoun([p, c])
+    }
 
     /// How many leading segments are settled and can go to the app now ("feels like normal typing").
     /// Kept open: the word being typed, plus the piece before it only when the next word can still change it —

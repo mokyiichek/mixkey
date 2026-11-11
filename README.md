@@ -12,6 +12,7 @@ MixKey is a macOS input method that works out, word by word, whether you are typ
 | `kuala lumpur hen re` | Kuala Lumpur 很热 |
 | `i got reading dfiifcuilteiy` | I got reading difficulty |
 | `ok la i go makan first` | Ok la I go makan first |
+| `we go to sport dickson` | We go to Port Dickson (the word before is fixed too) |
 | `tou fa` on a Taiwan / Hong Kong website | 頭髮 |
 
 It is built for people who find switching keyboards tiring, and for people with reading or spelling difficulty:
@@ -29,16 +30,17 @@ big, clear candidate window, pinyin with tone marks under each choice, and autom
 3. **Simplified or Traditional, automatically.** MixKey looks at Chinese already in the text field, the website
    address (`.tw`, `.hk`, `zh-Hant` …) and the window title, and switches to Traditional when it sees it — with
    phrase-aware conversion (头发 → 頭髮, 发展 → 發展).
-4. **✨ AI assist (optional).** Add a Claude API key and, after a short pause, MixKey asks Claude to fix the whole
-   sentence (homophones, spelling, names). The AI answer appears as choice 1; the local guess is always there too.
-   Only the letters you are currently composing are sent — never your document. Password fields never reach input methods.
+4. **✨ AI fixes (optional).** Add a Claude API key (混 menu › Add Claude API key…). When you pause for a moment,
+   Claude checks the sentence you just typed and fixes what the dictionary missed (wrong words, names, spelling) —
+   a small ✨ shows when it changed something, and **Delete** right after puts it back. Only that sentence (text
+   MixKey typed just now) is sent — never the rest of your document. Password fields never reach input methods.
 
 ## Keys
 
 | Key | Action |
 | --- | --- |
 | letters, space | keep typing — English words go out (spelling fixed) as soon as you press space |
-| **Delete** right after a fix | put back what you typed (and never fix that word again) |
+| **Delete** right after a fix | put back what you typed (a single word is never fixed again) |
 | **Enter** or **Space twice** | send what is shown |
 | **1–9** / click | pick a choice (picking a word keeps the rest of the sentence) |
 | ↑ ↓ Tab | move through choices, ← → page |
